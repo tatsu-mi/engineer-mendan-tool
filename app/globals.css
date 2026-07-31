@@ -1,10 +1,3 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>The面談forSES</title>
-<style>
   :root {
     --bg: #eef1f6;
     --surface: #ffffff;
@@ -235,6 +228,27 @@
   }
 
   .field-hint-row .field-hint { flex: 1; }
+
+  .form-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .file-limit,
+  .progress-label {
+    font-size: 11px;
+    color: var(--text-light);
+  }
+
+  .progress-label { color: var(--text-dim); }
+
+  .field-label-note {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text-light);
+    margin-left: 4px;
+  }
 
   .char-counter {
     flex-shrink: 0;
@@ -699,255 +713,3 @@
     padding: 0 20px;
     line-height: 1.8;
   }
-</style>
-</head>
-<body>
-
-<!-- ヘッダー -->
-<div class="app-header">
-  <div class="header-logo">
-    <div class="header-logo-icon">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0"/>
-      </svg>
-    </div>
-    <div class="header-title">The面談<span>forSES</span></div>
-  </div>
-  <div class="header-right">
-    <div class="header-sub">Gemini 3.1 Flash Live API</div>
-  </div>
-</div>
-
-<div class="container">
-
-  <!-- STEP 1: API Key -->
-  <div class="step-label">
-    <div class="step-num">1</div>
-    <div class="step-title">APIキー設定</div>
-  </div>
-  <div class="card">
-    <div class="card-header">
-      <svg class="card-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>
-      </svg>
-      <span class="card-title">Google AI Studio APIキー</span>
-    </div>
-    <div class="card-body">
-      <div class="apikey-row">
-        <input type="password" class="input-base" id="apiKeyInput" placeholder="AIzaSy..." autocomplete="off">
-        <button class="btn btn-secondary" onclick="saveApiKey()">SET</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- STEP 2: 入力情報 -->
-  <div class="step-label">
-    <div class="step-num">2</div>
-    <div class="step-title">面談情報の設定</div>
-  </div>
-
-  <!-- 案件情報 -->
-  <div class="card">
-    <div class="card-header">
-      <svg class="card-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
-      </svg>
-      <span class="card-title">案件情報</span>
-      <span class="card-badge required">必須</span>
-    </div>
-    <div class="card-body" style="display:flex; flex-direction:column; gap:14px;">
-      <div class="two-col">
-        <div>
-          <div class="field-label">案件名・プロジェクト名 <span class="req">*</span></div>
-          <input type="text" class="input-base" id="projectName" placeholder="例）大手流通EC基幹システム刷新PJ">
-        </div>
-        <div>
-          <div class="field-label">面接官ロール</div>
-          <input type="text" class="input-base" id="interviewerRole" placeholder="例）プロジェクトリーダー（PL）" value="プロジェクトリーダー（PL）">
-        </div>
-      </div>
-      <div>
-        <div class="field-label">必須スキル・技術要件 <span class="req">*</span></div>
-        <textarea class="textarea-base" id="requiredSkills" rows="3"
-          placeholder="例）Java（Spring Boot）5年以上、AWS（EC2/RDS/S3）、MySQL、チームリード経験歓迎"></textarea>
-      </div>
-      <div>
-        <div class="field-label">業務内容・案件概要</div>
-        <textarea class="textarea-base" id="projectDetail" rows="3"
-          placeholder="例）大手流通企業のEC基幹システム刷新。Spring Bootによるマイクロサービス化、AWSへのインフラ移行。チーム規模10名、期間2年。"></textarea>
-      </div>
-    </div>
-  </div>
-
-  <!-- スキルシート -->
-  <div class="card">
-    <div class="card-header">
-      <svg class="card-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-      </svg>
-      <span class="card-title">技術者スキルシート</span>
-      <span class="card-badge required">必須</span>
-    </div>
-    <div class="card-body" style="display:flex; flex-direction:column; gap:12px;">
-
-      <!-- Excel / PDF取込 -->
-      <div class="file-import">
-        <div class="file-import-row">
-          <input
-            type="file"
-            id="skillSheetFile"
-            accept=".xlsx,.xls,.xlsm,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/pdf"
-            onchange="importSkillSheet(event)"
-            hidden>
-          <label class="btn btn-secondary file-import-label" id="skillSheetFileLabel" for="skillSheetFile">
-            Excel / PDFを読み込む
-          </label>
-          <span style="font-size:11px; color:var(--text-light);">対応形式：.xlsx / .xls / .xlsm / .pdf（最大10MB）</span>
-        </div>
-        <div class="file-import-status" id="skillSheetImportStatus" aria-live="polite">
-          読み込んだ内容は下のテキスト欄へ反映され、面談前に編集できます。PDFの解析にはAPIキーを使用します。
-        </div>
-      </div>
-
-      <!-- テキストエリア -->
-      <div>
-        <div class="field-label" style="margin-bottom:6px;">
-          スキルシート内容 <span class="req">*</span>
-          <span style="font-size:11px; font-weight:400; color:var(--text-light); margin-left:4px;">（取込後の修正・手入力も可能）</span>
-        </div>
-        <textarea class="textarea-base" id="skillSheet" rows="8"
-          placeholder="氏名：山田 太郎&#10;経験年数：8年&#10;主なスキル：Java、Spring Boot、AWS、MySQL&#10;&#10;【職務経歴】&#10;2022〜2024年　大手製造業の在庫管理システム開発&#10;　・Spring Bootを用いたバックエンド開発&#10;　・AWSでのインフラ構築・運用（EC2/RDS/S3）&#10;　・チームリーダーとして5名をマネジメント&#10;&#10;2019〜2021年　金融系基幹システムのマイグレーション&#10;　・Javaによるバッチ処理開発&#10;&#10;【資格】AWS SAA、Oracle Java Silver"></textarea>
-        <p class="field-hint">Excelは全シートを読み込みます。PDFは表やスキャン画像を含めてAIがテキスト化します。内容を確認・修正してから面談を開始してください。</p>
-      </div>
-    </div>
-  </div>
-
-  <!-- 面談スタイル・追加指示 -->
-  <div class="card">
-    <div class="card-header">
-      <svg class="card-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M12 3v2m6.364.636l-1.414 1.414M21 12h-2M5.05 7.05L3.636 5.636M5 12H3m6 8h6m-5-4h4a4 4 0 001.172-7.824A6 6 0 008 13.659V14a2 2 0 002 2z"/>
-      </svg>
-      <span class="card-title">面談スタイル・追加指示</span>
-      <span class="card-badge optional">任意</span>
-    </div>
-    <div class="card-body">
-      <div class="field-label">この面談で希望する雰囲気や話し方</div>
-      <textarea
-        class="textarea-base"
-        id="interviewCustomization"
-        rows="4"
-        maxlength="1000"
-        aria-describedby="interviewCustomizationHint interviewCustomizationCounter"
-        placeholder="例）緊張をほぐすような柔らかい雰囲気で、回答を急かさず、相づちを少し多めにしてください。"></textarea>
-      <div class="field-hint-row">
-        <p class="field-hint" id="interviewCustomizationHint">
-          口調・雰囲気・進行テンポなどの補助設定として適用します。基本の質問構成や面談ルールは変更されません。
-        </p>
-        <span class="char-counter" id="interviewCustomizationCounter" aria-live="polite">0 / 1000</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- エラー -->
-  <div class="error-msg" id="errorMsg"></div>
-
-  <!-- STEP 3: 面談実施 -->
-  <div class="step-label">
-    <div class="step-num">3</div>
-    <div class="step-title">面談実施</div>
-  </div>
-
-  <div class="card">
-    <div class="card-header">
-      <svg class="card-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 016 0v6a3 3 0 01-3 3z"/>
-      </svg>
-      <span class="card-title">面談コントロール</span>
-      <span class="timer" id="timer">00:00</span>
-    </div>
-    <div class="card-body" style="display:flex; flex-direction:column; gap:14px;">
-
-      <!-- ステータスバー -->
-      <div class="status-bar">
-        <div class="status-dot" id="statusDot"></div>
-        <div class="status-text" id="statusText">案件情報とスキルシートを入力して「面談開始」を押してください</div>
-      </div>
-
-      <!-- 質問カウンター -->
-      <div class="q-counter" id="qCounter">
-        <span style="font-size:11px; color:var(--text-dim);">質問進捗</span>
-        <div class="q-dots" id="qDots">
-          <div class="q-dot" data-q="1"></div>
-          <div class="q-dot" data-q="2"></div>
-          <div class="q-dot" data-q="3"></div>
-          <div class="q-dot" data-q="4"></div>
-          <div class="q-dot" data-q="5"></div>
-          <div class="q-dot" data-q="6"></div>
-          <div class="q-dot" data-q="7"></div>
-        </div>
-        <span id="qLabel" style="font-size:11px; color:var(--text-dim);">— / 7問</span>
-      </div>
-
-      <!-- 波形 -->
-      <div class="visualizer-wrap">
-        <canvas id="visualizer"></canvas>
-      </div>
-
-      <!-- コントロール -->
-      <div class="controls-row">
-        <button class="btn btn-primary" id="startBtn" onclick="startSession()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-          面談開始
-        </button>
-        <button class="btn btn-primary" id="nextBtn" onclick="submitAnswer()" style="display:none;" disabled>
-          回答を送信して次へ
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5l8 7-8 7V5z"/></svg>
-        </button>
-        <button class="btn btn-danger" id="endBtn" onclick="endSession()" style="display:none;">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg>
-          面談終了
-        </button>
-        <div class="controls-hint">
-          回答後に「回答を送信して次へ」を押してください<br>「面談終了」ボタンで途中終了
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 会話ログ -->
-  <div class="card">
-    <div class="card-header">
-      <svg class="card-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/>
-      </svg>
-      <span class="card-title">会話ログ</span>
-    </div>
-    <div class="transcript-box" id="transcriptBox">
-      <div class="placeholder" id="placeholder">
-        面談を開始すると、ここに会話が表示されます。<br>
-        接続後「よろしくお願いします」と話しかけてください。
-      </div>
-    </div>
-  </div>
-
-  <!-- STEP 4: 総評 -->
-  <div class="card review-panel" id="reviewPanel">
-    <div class="card-header">
-      <svg class="card-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
-      </svg>
-      <span class="card-title">商談総評レポート</span>
-    </div>
-    <div id="reviewContent"></div>
-  </div>
-
-  <footer>
-    The面談forSES — PoC Build &nbsp;|&nbsp; Powered by Gemini 3.1 Flash Live API &nbsp;|&nbsp; © Beeline
-  </footer>
-</div>
-
-<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-<script src="./ses-mendan-tool.js"></script>
-</body>
-</html>

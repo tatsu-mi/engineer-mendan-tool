@@ -1,12 +1,11 @@
+// @ts-nocheck
 'use strict';
 
 // ===== 設定 =====
 const MODEL_LIVE = 'gemini-3.1-flash-live-preview';
-const MODEL_TEXT = 'gemini-3.5-flash-lite';
-const WS_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
-const REST_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
+const WS_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained';
 const MAX_QUESTIONS = 7;
-const MAX_SKILL_SHEET_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_SKILL_SHEET_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_SKILL_SHEET_TEXT_CHARS = 120000;
 const MAX_INTERVIEW_CUSTOMIZATION_CHARS = 1000;
 
@@ -36,6 +35,7 @@ let timerInterval = null;
 let elapsedSeconds = 0;
 let questionCount = 0;
 let sessionStarted = false;
+let setupCompleted = false;
 
 // ===== UI =====
 const $ = id => document.getElementById(id);
@@ -168,12 +168,11 @@ function saveApiKey() {
     showError('APIキーを入力してください');
     return;
   }
-  sessionStorage.setItem('gemini_key', key);
   setStatus('APIキーを設定しました。');
 }
 
 function getApiKey() {
-  return sessionStorage.getItem('gemini_key') || $('apiKeyInput').value.trim();
+  return $('apiKeyInput').value.trim();
 }
 
 // ===== 面談スタイル・追加指示 =====
@@ -183,7 +182,7 @@ function updateInterviewCustomizationCounter() {
     `${length} / ${MAX_INTERVIEW_CUSTOMIZATION_CHARS}`;
 }
 
-// ===== Excel / PDFスキルシート取込 =====
+// ===== PDFスキルシート取込 =====
 function setSkillSheetImportStatus(message, state = '') {
   const status = $('skillSheetImportStatus');
   status.textContent = message;
@@ -195,100 +194,15 @@ function setSkillSheetFileDisabled(disabled) {
   $('skillSheetFileLabel').classList.toggle('is-disabled', disabled);
 }
 
-function normalizeCellText(value) {
-  return String(value ?? '')
-    .replace(/\r\n?/g, '\n')
-    .replace(/\n+/g, ' / ')
-    .replace(/\t/g, ' ')
-    .trim();
-}
-
-function workbookToSkillSheetText(workbook, xlsx = window.XLSX) {
-  const sections = [];
-
-  for (const sheetName of workbook.SheetNames || []) {
-    const worksheet = workbook.Sheets[sheetName];
-    if (!worksheet) continue;
-    const rows = xlsx.utils.sheet_to_json(worksheet, {
-      header: 1,
-      raw: false,
-      defval: '',
-      blankrows: false
-    });
-    const lines = rows
-      .map(row => row.map(normalizeCellText).join('\t').replace(/\t+$/g, ''))
-      .filter(line => line.trim());
-    if (lines.length) sections.push(`## シート：${sheetName}\n${lines.join('\n')}`);
-  }
-
-  return sections.join('\n\n');
-}
-
-async function extractExcelSkillSheet(file) {
-  if (!window.XLSX?.read || !window.XLSX?.utils?.sheet_to_json) {
-    throw new Error('Excel読込ライブラリを読み込めませんでした。ネットワーク接続を確認してください。');
-  }
-  const workbook = window.XLSX.read(await file.arrayBuffer(), {
-    type: 'array',
-    cellDates: true
-  });
-  const text = workbookToSkillSheetText(workbook);
-  if (!text) throw new Error('Excelファイル内に読み取れるセルがありません。');
-  return text;
-}
-
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || '');
-      const commaIndex = result.indexOf(',');
-      if (commaIndex < 0) {
-        reject(new Error('PDFファイルを読み取れませんでした。'));
-        return;
-      }
-      resolve(result.slice(commaIndex + 1));
-    };
-    reader.onerror = () => reject(new Error('PDFファイルを読み取れませんでした。'));
-    reader.readAsDataURL(file);
-  });
-}
-
-function cleanExtractedDocumentText(text) {
-  return text
-    .replace(/^```(?:markdown|md|text)?\s*/i, '')
-    .replace(/\s*```\s*$/i, '')
-    .trim();
-}
-
 async function extractPdfSkillSheet(file) {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('PDFの解析にはAPIキーが必要です。先にAPIキーを設定してください。');
-
-  const base64 = await fileToBase64(file);
-  const prompt = `添付されたPDFはSES技術者のスキルシートです。面談の質問作成に使えるよう、内容を日本語のMarkdownテキストとして正確に抽出してください。
-
-## 必須事項
-- 氏名・イニシャル、経験年数、自己PRなどの基本情報
-- OS、言語、フレームワーク、DB、クラウド、ツール、資格などのスキル
-- すべての職務経歴について、期間、案件概要、担当工程、役割、業務内容、使用技術
-- 表の見出しと各行の対応関係を保つ
-- 読み取れない箇所は「判読不能」と記載する
-- PDFにない経験や情報を推測・追加しない
-- Markdown本文だけを出力し、前置きや説明は付けない`;
-
-  const response = await fetch(`${REST_ENDPOINT}/${MODEL_TEXT}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await fetch('/api/pdf', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{
-        role: 'user',
-        parts: [
-          { inlineData: { mimeType: 'application/pdf', data: base64 } },
-          { text: prompt }
-        ]
-      }]
-    })
+    headers: { 'x-gemini-api-key': apiKey },
+    body: formData
   });
 
   let data;
@@ -298,18 +212,11 @@ async function extractPdfSkillSheet(file) {
     throw new Error(`PDF解析APIからJSONではない応答が返されました（HTTP ${response.status}）。`);
   }
   if (!response.ok) {
-    throw new Error(data.error?.message || `PDFの解析に失敗しました（HTTP ${response.status}）。`);
+    throw new Error(data.error || `PDFの解析に失敗しました（HTTP ${response.status}）。`);
   }
-  if (data.promptFeedback?.blockReason) {
-    throw new Error(`安全性フィルターによりPDFを解析できませんでした（${data.promptFeedback.blockReason}）。`);
-  }
-
-  const text = data.candidates?.[0]?.content?.parts
-    ?.map(part => part.text || '')
-    .join('')
-    .trim();
+  const text = data.text?.trim();
   if (!text) throw new Error('PDFからスキルシート内容を抽出できませんでした。');
-  return cleanExtractedDocumentText(text);
+  return text;
 }
 
 async function importSkillSheet(event) {
@@ -323,7 +230,7 @@ async function importSkillSheet(event) {
     return;
   }
   if (file.size > MAX_SKILL_SHEET_FILE_BYTES) {
-    const message = 'ファイルサイズが10MBを超えています。10MB以下のファイルを選択してください。';
+    const message = 'ファイルサイズが4MBを超えています。4MB以下のPDFを選択してください。';
     setSkillSheetImportStatus(message, 'error');
     showError(message);
     input.value = '';
@@ -331,10 +238,9 @@ async function importSkillSheet(event) {
   }
 
   const extension = file.name.split('.').pop()?.toLowerCase() || '';
-  const isExcel = ['xlsx', 'xls', 'xlsm'].includes(extension);
   const isPdf = extension === 'pdf' || file.type === 'application/pdf';
-  if (!isExcel && !isPdf) {
-    const message = '対応していないファイル形式です。.xlsx、.xls、.xlsm、.pdfを選択してください。';
+  if (!isPdf) {
+    const message = '対応していないファイル形式です。.pdfを選択してください。';
     setSkillSheetImportStatus(message, 'error');
     showError(message);
     input.value = '';
@@ -343,15 +249,10 @@ async function importSkillSheet(event) {
 
   isSkillSheetImporting = true;
   setSkillSheetFileDisabled(true);
-  setSkillSheetImportStatus(
-    isPdf ? `${file.name} をAIで解析しています...` : `${file.name} を読み込んでいます...`,
-    'loading'
-  );
+  setSkillSheetImportStatus(`${file.name} をAIで解析しています...`, 'loading');
 
   try {
-    const extractedText = isPdf
-      ? await extractPdfSkillSheet(file)
-      : await extractExcelSkillSheet(file);
+    const extractedText = await extractPdfSkillSheet(file);
     if (extractedText.length > MAX_SKILL_SHEET_TEXT_CHARS) {
       throw new Error('抽出結果が長すぎます。不要なシートやページを削除してから再度読み込んでください。');
     }
@@ -540,6 +441,7 @@ async function handleMessage(event) {
   }
 
   if (data.setupComplete !== undefined) {
+    setupCompleted = true;
     startTimer();
     beginAnswerRecording();
     return;
@@ -717,12 +619,13 @@ function validateInputs() {
 }
 
 // ===== セッション開始 =====
-function startSession() {
+async function startSession() {
   if (!validateInputs()) return;
 
   conversationLog = [];
   questionCount = 0;
   sessionStarted = false;
+  setupCompleted = false;
   isAnswerRecording = false;
   isAwaitingModel = false;
   pendingCaptureAfterPlayback = false;
@@ -744,9 +647,28 @@ function startSession() {
 
   setStatus('接続中...', 'idle');
   const apiKey = getApiKey();
-  ws = new WebSocket(`${WS_ENDPOINT}?key=${encodeURIComponent(apiKey)}`);
   isSessionActive = true;
 
+  let token;
+  try {
+    const tokenResponse = await fetch('/api/live-token', {
+      method: 'POST',
+      headers: { 'x-gemini-api-key': apiKey },
+      cache: 'no-store'
+    });
+    const tokenData = await tokenResponse.json();
+    if (!tokenResponse.ok || !tokenData.token) {
+      throw new Error(tokenData.error || 'Live APIトークンを取得できませんでした。');
+    }
+    token = tokenData.token;
+  } catch (error) {
+    showError(`接続準備に失敗しました: ${error.message}`);
+    cleanupSession('面談を開始できませんでした。');
+    return;
+  }
+
+  if (!isSessionActive) return;
+  ws = new WebSocket(`${WS_ENDPOINT}?access_token=${encodeURIComponent(token)}`);
   ws.onopen = () => {
     ws.send(JSON.stringify({
       setup: {
@@ -755,8 +677,7 @@ function startSession() {
           responseModalities: ['AUDIO'],
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Charon' } }
-          },
-          thinkingConfig: { thinkingLevel: 'minimal' }
+          }
         },
         realtimeInputConfig: {
           automaticActivityDetection: { disabled: true }
@@ -770,13 +691,17 @@ function startSession() {
   };
 
   ws.onmessage = handleMessage;
-  ws.onerror = () => {
-    showError('接続エラー。APIキーを確認してください。');
-    cleanupSession('面談を開始できませんでした。');
+  ws.onerror = event => {
+    console.error('Live API WebSocket error:', event);
+    setStatus('Live APIの接続エラーを確認しています...', 'idle');
   };
   ws.onclose = event => {
     if (!isSessionActive) return;
-    if (event.code !== 1000) showError(`切断されました (code: ${event.code})`);
+    if (event.code !== 1000) {
+      const detail = event.reason ? `: ${event.reason}` : '';
+      const phase = setupCompleted ? '' : '（初期化中）';
+      showError(`Live APIから切断されました${phase} (code: ${event.code}${detail})`);
+    }
     cleanupSession('接続が終了しました。もう一度面談を開始してください。');
   };
 }
@@ -897,29 +822,6 @@ function cleanupSession(statusMessage) {
 }
 
 // ===== 総評生成 =====
-function reviewResponseSchema() {
-  return {
-    type: 'OBJECT',
-    properties: {
-      overall: { type: 'STRING', enum: ['◎', '○', '△', '×'] },
-      scores: {
-        type: 'OBJECT',
-        properties: {
-          '技術力': { type: 'INTEGER', minimum: 1, maximum: 5 },
-          'コミュニケーション': { type: 'INTEGER', minimum: 1, maximum: 5 },
-          '総合': { type: 'INTEGER', minimum: 1, maximum: 5 }
-        },
-        required: ['技術力', 'コミュニケーション', '総合']
-      },
-      technical: { type: 'STRING' },
-      communication: { type: 'STRING' },
-      attitude: { type: 'STRING' },
-      feedback: { type: 'STRING' }
-    },
-    required: ['overall', 'scores', 'technical', 'communication', 'attitude', 'feedback']
-  };
-}
-
 function validateReview(review) {
   const validOverall = ['◎', '○', '△', '×'].includes(review?.overall);
   const scoreKeys = ['技術力', 'コミュニケーション', '総合'];
@@ -954,41 +856,22 @@ async function generateReview() {
     </div>`;
   setTimeout(() => $('reviewPanel').scrollIntoView({ behavior: 'smooth', block: 'start' }), 300);
 
-  const logText = conversationLog
-    .map(log => `【${log.role === 'interviewer' ? '面接官' : '候補者'}】${log.text}`)
-    .join('\n');
   const projectName = $('projectName').value.trim() || '（案件名未設定）';
   const requiredSkills = $('requiredSkills').value.trim() || '（必須スキル未設定）';
   const skillSheet = $('skillSheet').value.trim() || '（スキルシート未設定）';
 
-  const prompt = `以下はSES技術者面談の情報と会話ログです。面接官の立場から、候補者を総合的に評価してください。
-
-## 案件情報
-- 案件名：${projectName}
-- 必須スキル：${requiredSkills}
-
-## 候補者のスキルシート
-${skillSheet}
-
-## 会話ログ
-${logText}
-
-## 評価基準
-- technical、communication、attitude はそれぞれ200文字以内
-- feedback は300文字以内で、候補者が次回改善できる具体的な助言を含める
-- 会話で確認できなかった事項を経験済みと断定しない
-- overall は ◎（強く推奨）・○（推奨）・△（要検討）・×（見送り）のいずれか`;
-
   try {
-    const response = await fetch(`${REST_ENDPOINT}/${MODEL_TEXT}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+    const response = await fetch('/api/review', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-gemini-api-key': apiKey
+      },
       body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          responseSchema: reviewResponseSchema()
-        }
+        projectName,
+        requiredSkills,
+        skillSheet,
+        conversationLog
       })
     });
 
@@ -1000,24 +883,9 @@ ${logText}
     }
 
     if (!response.ok) {
-      throw new Error(data.error?.message || `APIリクエストに失敗しました（HTTP ${response.status}）。`);
+      throw new Error(data.error || `APIリクエストに失敗しました（HTTP ${response.status}）。`);
     }
-    if (data.promptFeedback?.blockReason) {
-      throw new Error(`安全性フィルターにより評価を生成できませんでした（${data.promptFeedback.blockReason}）。`);
-    }
-
-    const rawText = data.candidates?.[0]?.content?.parts
-      ?.map(part => part.text || '')
-      .join('')
-      .trim();
-    if (!rawText) throw new Error('APIから評価本文が返されませんでした。');
-
-    let review;
-    try {
-      review = JSON.parse(rawText);
-    } catch (_) {
-      throw new Error('評価結果のJSONを解析できませんでした。');
-    }
+    const review = data.review;
     if (!validateReview(review)) throw new Error('評価結果に必要な項目が不足しています。');
 
     renderReview(review);
@@ -1035,8 +903,9 @@ function showReviewError(message) {
   $('reviewContent').innerHTML = `
     <div style="padding:20px; color:var(--red); font-size:13px; line-height:1.8;">
       <div>総評の生成に失敗しました: ${escapeHtml(message)}</div>
-      <button class="btn btn-secondary" style="margin-top:12px;" onclick="generateReview()">再生成</button>
+      <button class="btn btn-secondary" id="reviewRetryBtn" type="button" style="margin-top:12px;">再生成</button>
     </div>`;
+  $('reviewRetryBtn').addEventListener('click', generateReview);
 }
 
 // ===== 総評レンダリング =====
@@ -1110,10 +979,39 @@ function renderReview(review) {
     </div>`;
 }
 
-window.addEventListener('load', () => {
-  const saved = sessionStorage.getItem('gemini_key');
-  if (saved) $('apiKeyInput').value = saved;
-  $('interviewCustomization').addEventListener('input', updateInterviewCustomizationCounter);
+export function initializeInterviewApp() {
+  const saveApiKeyButton = $('saveApiKeyBtn');
+  const skillSheetFile = $('skillSheetFile');
+  const customization = $('interviewCustomization');
+  const startButton = $('startBtn');
+  const nextButton = $('nextBtn');
+  const endButton = $('endBtn');
+
+  saveApiKeyButton.addEventListener('click', saveApiKey);
+  skillSheetFile.addEventListener('change', importSkillSheet);
+  customization.addEventListener('input', updateInterviewCustomizationCounter);
+  startButton.addEventListener('click', startSession);
+  nextButton.addEventListener('click', submitAnswer);
+  endButton.addEventListener('click', endSession);
+
   updateInterviewCustomizationCounter();
   setStatus('案件情報とスキルシートを入力して「面談開始」を押してください');
-});
+
+  return () => {
+    saveApiKeyButton.removeEventListener('click', saveApiKey);
+    skillSheetFile.removeEventListener('change', importSkillSheet);
+    customization.removeEventListener('input', updateInterviewCustomizationCounter);
+    startButton.removeEventListener('click', startSession);
+    nextButton.removeEventListener('click', submitAnswer);
+    endButton.removeEventListener('click', endSession);
+
+    isSessionActive = false;
+    isAnswerRecording = false;
+    isAwaitingModel = false;
+    clearAudioQueue();
+    stopTimer();
+    stopMediaResources();
+    if (ws && ws.readyState <= WebSocket.OPEN) ws.close(1000);
+    ws = null;
+  };
+}
