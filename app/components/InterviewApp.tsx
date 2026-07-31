@@ -165,28 +165,72 @@ export default function InterviewApp() {
         <section className="card">
           <div className="card-header">
             <Icon>💡</Icon>
-            <span className="card-title">面談スタイル・追加指示</span>
-            <span className="card-badge optional">任意</span>
+            <span className="card-title">面談構成・スタイル</span>
           </div>
-          <div className="card-body">
-            <label className="field-label" htmlFor="interviewCustomization">
-              この面談で希望する雰囲気や話し方
-            </label>
-            <textarea
-              className="textarea-base"
-              id="interviewCustomization"
-              rows={4}
-              maxLength={1000}
-              aria-describedby="interviewCustomizationHint interviewCustomizationCounter"
-              placeholder="例）緊張をほぐすような柔らかい雰囲気で、回答を急かさず、相づちを少し多めにしてください。"
-            />
-            <div className="field-hint-row">
-              <p className="field-hint" id="interviewCustomizationHint">
-                口調・雰囲気・進行テンポなどの補助設定として適用します。
-              </p>
-              <span className="char-counter" id="interviewCustomizationCounter" aria-live="polite">
-                0 / 1000
-              </span>
+          <div className="card-body form-stack">
+            <div className="interview-settings">
+              <div>
+                <label className="field-label" htmlFor="questionCount">主質問数</label>
+                <div className="number-input-wrap">
+                  <input
+                    type="number"
+                    className="input-base"
+                    id="questionCount"
+                    min={1}
+                    max={20}
+                    step={1}
+                    defaultValue={7}
+                    inputMode="numeric"
+                    aria-describedby="questionCountHint"
+                  />
+                  <span>問</span>
+                </div>
+                <p className="field-hint" id="questionCountHint">
+                  1〜20問。AIが案件・経歴に合わせて全体をバランスよく構成します。
+                </p>
+              </div>
+              <div>
+                <label className="field-label" htmlFor="followUpIntensity">回答の深掘り強度</label>
+                <select
+                  className="select-base"
+                  id="followUpIntensity"
+                  defaultValue="standard"
+                  aria-describedby="followUpIntensityHint"
+                >
+                  <option value="none">なし — 主質問をテンポよく進行</option>
+                  <option value="standard">標準 — 必要に応じて1回</option>
+                  <option value="deep">しっかり — 原則1〜2回</option>
+                </select>
+                <p className="field-hint" id="followUpIntensityHint">
+                  深掘りは主質問数に含みません。「しっかり」ほど面談時間が長くなります。
+                </p>
+              </div>
+            </div>
+            <div className="reverse-question-note">
+              <span aria-hidden="true">↩</span>
+              最後に必ず逆質問の時間を設けます。候補者が「もう質問はありません」と伝えるまで継続します。
+            </div>
+            <div>
+              <label className="field-label" htmlFor="interviewCustomization">
+                この面談で希望する雰囲気や話し方
+                <span className="field-label-note">（任意）</span>
+              </label>
+              <textarea
+                className="textarea-base"
+                id="interviewCustomization"
+                rows={4}
+                maxLength={1000}
+                aria-describedby="interviewCustomizationHint interviewCustomizationCounter"
+                placeholder="例）緊張をほぐすような柔らかい雰囲気で、回答を急かさず、相づちを少し多めにしてください。"
+              />
+              <div className="field-hint-row">
+                <p className="field-hint" id="interviewCustomizationHint">
+                  口調・雰囲気・進行テンポなどの補助設定として適用します。
+                </p>
+                <span className="char-counter" id="interviewCustomizationCounter" aria-live="polite">
+                  0 / 1000
+                </span>
+              </div>
             </div>
           </div>
         </section>
@@ -214,11 +258,7 @@ export default function InterviewApp() {
 
             <div className="q-counter" id="qCounter">
               <span className="progress-label">質問進捗</span>
-              <div className="q-dots" id="qDots">
-                {Array.from({ length: 7 }, (_, index) => (
-                  <div className="q-dot" data-q={index + 1} key={index} />
-                ))}
-              </div>
+              <div className="q-dots" id="qDots" />
               <span className="progress-label" id="qLabel">— / 7問</span>
             </div>
 

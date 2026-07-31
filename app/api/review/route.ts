@@ -35,13 +35,14 @@ const responseSchema = {
 function isValidConversation(value: unknown): value is Array<{ role: string; text: string }> {
   return Array.isArray(value)
     && value.length > 0
-    && value.length <= 100
+    && value.length <= 300
     && value.every(item =>
       item
       && (item.role === 'interviewer' || item.role === 'candidate')
       && typeof item.text === 'string'
       && item.text.length <= 20000
-    );
+    )
+    && value.reduce((total, item) => total + item.text.length, 0) <= 2000000;
 }
 
 export async function POST(request: Request) {
