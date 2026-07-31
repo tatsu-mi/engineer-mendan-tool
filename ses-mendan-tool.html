@@ -227,6 +227,52 @@
     line-height: 1.6;
   }
 
+  .field-hint-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .field-hint-row .field-hint { flex: 1; }
+
+  .char-counter {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--text-light);
+    margin-top: 6px;
+  }
+
+  .file-import {
+    padding: 12px 14px;
+    background: var(--surface2);
+    border: 1px dashed var(--border-strong);
+    border-radius: 7px;
+  }
+
+  .file-import-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .file-import-label.is-disabled {
+    opacity: 0.55;
+    pointer-events: none;
+  }
+
+  .file-import-status {
+    margin-top: 8px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-light);
+  }
+
+  .file-import-status.loading { color: var(--blue); }
+  .file-import-status.success { color: var(--green); }
+  .file-import-status.error { color: var(--red); }
+
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 600px) { .two-col { grid-template-columns: 1fr; } }
 
@@ -744,15 +790,61 @@
     </div>
     <div class="card-body" style="display:flex; flex-direction:column; gap:12px;">
 
+      <!-- Excel / PDF取込 -->
+      <div class="file-import">
+        <div class="file-import-row">
+          <input
+            type="file"
+            id="skillSheetFile"
+            accept=".xlsx,.xls,.xlsm,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/pdf"
+            onchange="importSkillSheet(event)"
+            hidden>
+          <label class="btn btn-secondary file-import-label" id="skillSheetFileLabel" for="skillSheetFile">
+            Excel / PDFを読み込む
+          </label>
+          <span style="font-size:11px; color:var(--text-light);">対応形式：.xlsx / .xls / .xlsm / .pdf（最大10MB）</span>
+        </div>
+        <div class="file-import-status" id="skillSheetImportStatus" aria-live="polite">
+          読み込んだ内容は下のテキスト欄へ反映され、面談前に編集できます。PDFの解析にはAPIキーを使用します。
+        </div>
+      </div>
+
       <!-- テキストエリア -->
       <div>
         <div class="field-label" style="margin-bottom:6px;">
           スキルシート内容 <span class="req">*</span>
-          <span style="font-size:11px; font-weight:400; color:var(--text-light); margin-left:4px;">（テキストで入力）</span>
+          <span style="font-size:11px; font-weight:400; color:var(--text-light); margin-left:4px;">（取込後の修正・手入力も可能）</span>
         </div>
         <textarea class="textarea-base" id="skillSheet" rows="8"
           placeholder="氏名：山田 太郎&#10;経験年数：8年&#10;主なスキル：Java、Spring Boot、AWS、MySQL&#10;&#10;【職務経歴】&#10;2022〜2024年　大手製造業の在庫管理システム開発&#10;　・Spring Bootを用いたバックエンド開発&#10;　・AWSでのインフラ構築・運用（EC2/RDS/S3）&#10;　・チームリーダーとして5名をマネジメント&#10;&#10;2019〜2021年　金融系基幹システムのマイグレーション&#10;　・Javaによるバッチ処理開発&#10;&#10;【資格】AWS SAA、Oracle Java Silver"></textarea>
-        <p class="field-hint">PDFやドキュメントをMarkdownに変換し、このエリアにペーストするのがベストです。もちろん、手動入力も可能です。</p>
+        <p class="field-hint">Excelは全シートを読み込みます。PDFは表やスキャン画像を含めてAIがテキスト化します。内容を確認・修正してから面談を開始してください。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 面談スタイル・追加指示 -->
+  <div class="card">
+    <div class="card-header">
+      <svg class="card-header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 3v2m6.364.636l-1.414 1.414M21 12h-2M5.05 7.05L3.636 5.636M5 12H3m6 8h6m-5-4h4a4 4 0 001.172-7.824A6 6 0 008 13.659V14a2 2 0 002 2z"/>
+      </svg>
+      <span class="card-title">面談スタイル・追加指示</span>
+      <span class="card-badge optional">任意</span>
+    </div>
+    <div class="card-body">
+      <div class="field-label">この面談で希望する雰囲気や話し方</div>
+      <textarea
+        class="textarea-base"
+        id="interviewCustomization"
+        rows="4"
+        maxlength="1000"
+        aria-describedby="interviewCustomizationHint interviewCustomizationCounter"
+        placeholder="例）緊張をほぐすような柔らかい雰囲気で、回答を急かさず、相づちを少し多めにしてください。"></textarea>
+      <div class="field-hint-row">
+        <p class="field-hint" id="interviewCustomizationHint">
+          口調・雰囲気・進行テンポなどの補助設定として適用します。基本の質問構成や面談ルールは変更されません。
+        </p>
+        <span class="char-counter" id="interviewCustomizationCounter" aria-live="polite">0 / 1000</span>
       </div>
     </div>
   </div>
@@ -855,6 +947,7 @@
   </footer>
 </div>
 
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="./ses-mendan-tool.js"></script>
 </body>
 </html>
