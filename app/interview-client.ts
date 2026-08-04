@@ -10,6 +10,9 @@ const MAX_QUESTION_COUNT = 20;
 const MAX_SKILL_SHEET_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_SKILL_SHEET_TEXT_CHARS = 120000;
 const MAX_INTERVIEW_CUSTOMIZATION_CHARS = 1000;
+const TRANSCRIPTION_SETTLE_MS = 800;
+const TRANSCRIPT_CORRECTION_TIMEOUT_MS = 25 * 1000;
+const MAX_CORRECTION_DOMAIN_CONTEXT_CHARS = 20000;
 
 // ===== 状態 =====
 let ws = null;
@@ -31,6 +34,10 @@ let visualizerRaf = null;
 let activeSource = null;
 let userTextBuffer = '';
 let aiTextBuffer = '';
+let turnCompletePending = false;
+let transcriptionSettleTimer = null;
+let pendingTranscriptCorrections = new Set();
+let activeCorrectionSession = 0;
 let conversationLog = [];
 let timerInterval = null;
 let elapsedSeconds = 0;
@@ -84,6 +91,7 @@ function readQuestionCount() {
 
 function renderQuestionDots(total = interviewQuestionTarget) {
   const dots = $('qDots');
+  if (!dots) return;
   dots.replaceChildren();
   for (let index = 1; index <= total; index++) {
     const dot = document.createElement('div');
@@ -91,11 +99,12 @@ function renderQuestionDots(total = interviewQuestionTarget) {
     dot.dataset.q = String(index);
     dots.appendChild(dot);
   }
-  $('qLabel').textContent = `— / ${total}問`;
+  if ($('qLabel')) $('qLabel').textContent = `— / ${total}問`;
 }
 
 function updateQCounter(current) {
   questionCount = Math.max(1, Math.min(current, interviewQuestionTarget));
+  if (!$('qCounter')) return;
   $('qCounter').classList.add('active');
   $('qLabel').textContent = `${questionCount} / ${interviewQuestionTarget}問`;
   document.querySelectorAll('.q-dot').forEach((dot, i) => {
@@ -126,6 +135,7 @@ function isReverseQuestionStart(text) {
 }
 
 function showReverseQuestionProgress() {
+  if (!$('qLabel')) return;
   document.querySelectorAll('.q-dot').forEach(dot => {
     dot.classList.remove('current');
     dot.classList.add('done');
@@ -155,7 +165,18 @@ function addMessage(role, text, qNum = null) {
     </div>`;
   box.appendChild(msg);
   box.scrollTop = box.scrollHeight;
-  conversationLog.push({ role: isInterviewer ? 'interviewer' : 'candidate', text });
+  const logEntry = { role: isInterviewer ? 'interviewer' : 'candidate', text };
+  conversationLog.push(logEntry);
+  return {
+    bubble: msg.querySelector('.msg-bubble'),
+    logEntry
+  };
+}
+
+function updateMessage(messageRef, text) {
+  if (!messageRef || !text) return;
+  messageRef.logEntry.text = text;
+  if (messageRef.bubble) messageRef.bubble.textContent = text;
 }
 
 function showAiThinking() {
@@ -179,6 +200,96 @@ function showAiThinking() {
 
 function removeAiThinking() {
   $('aiThinking')?.remove();
+}
+
+// ===== Geminiによる文字起こし文脈補正 =====
+function getLastInterviewerText() {
+  for (let index = conversationLog.length - 1; index >= 0; index--) {
+    if (conversationLog[index].role === 'interviewer') return conversationLog[index].text;
+  }
+  return '';
+}
+
+function buildCorrectionDomainContext() {
+  const projectName = $('projectName').value.trim();
+  const requiredSkills = $('requiredSkills').value.trim();
+  const projectDetail = $('projectDetail').value.trim();
+  const skillSheet = $('skillSheet').value.trim();
+  return `案件名：${projectName}
+必須スキル：${requiredSkills}
+案件概要：${projectDetail}
+スキルシート：${skillSheet}`.slice(0, MAX_CORRECTION_DOMAIN_CONTEXT_CHARS);
+}
+
+function isReverseQuestionContext(interviewerText) {
+  const compactText = interviewerText.replace(/\s/g, '');
+  return isReverseQuestionStart(interviewerText)
+    || /(?:ほか|他)にはいかがですか/.test(compactText)
+    || /ご?質問(?:は)?(?:あります|ございます)か/.test(compactText);
+}
+
+async function requestTranscriptCorrection({
+  rawText,
+  previousInterviewerText,
+  followingInterviewerText,
+  isReverseQuestionTurn
+}) {
+  if (rawText.length < 4 || /^(?:はい|いいえ|ありがとうございます|よろしくお願いします)[。！!]?$/.test(rawText)) {
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TRANSCRIPT_CORRECTION_TIMEOUT_MS);
+  try {
+    const response = await fetch('/api/correct-transcript', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-gemini-api-key': getApiKey()
+      },
+      body: JSON.stringify({
+        rawText,
+        previousInterviewerText,
+        followingInterviewerText,
+        isReverseQuestionTurn,
+        domainContext: buildCorrectionDomainContext()
+      }),
+      signal: controller.signal
+    });
+    const data = await response.json();
+    if (!response.ok || data.shouldReplace !== true || typeof data.correctedText !== 'string') {
+      return null;
+    }
+    return data.correctedText.trim() || null;
+  } catch (error) {
+    console.warn('Transcript correction failed; using original transcript:', error);
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function trackTranscriptCorrection(promise) {
+  pendingTranscriptCorrections.add(promise);
+  promise.then(
+    () => pendingTranscriptCorrections.delete(promise),
+    () => pendingTranscriptCorrections.delete(promise)
+  );
+}
+
+function correctCandidateMessage(messageRef, context) {
+  const session = activeCorrectionSession;
+  const correction = requestTranscriptCorrection(context).then(correctedText => {
+    if (session !== activeCorrectionSession || !correctedText) return;
+    updateMessage(messageRef, correctedText);
+  });
+  trackTranscriptCorrection(correction);
+}
+
+async function waitForPendingTranscriptCorrections() {
+  while (pendingTranscriptCorrections.size > 0) {
+    await Promise.allSettled(Array.from(pendingTranscriptCorrections));
+  }
 }
 
 // ===== タイマー =====
@@ -475,6 +586,71 @@ function clearAudioQueue() {
 }
 
 // ===== Live APIメッセージ処理 =====
+function clearPendingTurnFinalization() {
+  if (transcriptionSettleTimer) clearTimeout(transcriptionSettleTimer);
+  transcriptionSettleTimer = null;
+  turnCompletePending = false;
+}
+
+function scheduleTurnFinalization() {
+  if (!turnCompletePending) return;
+  if (transcriptionSettleTimer) clearTimeout(transcriptionSettleTimer);
+  transcriptionSettleTimer = setTimeout(finalizeCompletedTurn, TRANSCRIPTION_SETTLE_MS);
+}
+
+function finalizeCompletedTurn() {
+  if (!turnCompletePending || !isSessionActive) return;
+  transcriptionSettleTimer = null;
+  turnCompletePending = false;
+
+  const previousInterviewerText = getLastInterviewerText();
+  const userText = userTextBuffer.trim();
+  if (userText && !sessionStarted && /よろしくお願い/.test(userText)) sessionStarted = true;
+  userTextBuffer = '';
+  removeAiThinking();
+
+  const aiText = aiTextBuffer.trim();
+  const interviewClosing = aiText && isInterviewClosing(aiText);
+  let candidateMessage = null;
+  if (userText) candidateMessage = addMessage('user', userText);
+
+  if (aiText) {
+    const detectedQuestion = extractQuestionNumber(aiText);
+    if (detectedQuestion && detectedQuestion >= questionCount) {
+      sessionStarted = true;
+      updateQCounter(detectedQuestion);
+    } else if (sessionStarted && questionCount === 0) {
+      updateQCounter(1);
+    }
+    if (isReverseQuestionStart(aiText)) showReverseQuestionProgress();
+    addMessage('interviewer', aiText, detectedQuestion);
+  }
+  aiTextBuffer = '';
+  isAwaitingModel = false;
+
+  if (candidateMessage) {
+    correctCandidateMessage(candidateMessage, {
+      rawText: userText,
+      previousInterviewerText,
+      followingInterviewerText: aiText,
+      isReverseQuestionTurn: isReverseQuestionContext(previousInterviewerText)
+    });
+  }
+
+  if (interviewClosing) {
+    pendingAutoEnd = true;
+    setNextButton({ visible: true, disabled: true });
+    if (!isPlayingAudio && audioQueue.length === 0) {
+      pendingAutoEnd = false;
+      endSession();
+    }
+    return;
+  }
+
+  pendingCaptureAfterPlayback = true;
+  if (!isPlayingAudio && audioQueue.length === 0) beginAnswerRecording();
+}
+
 async function handleMessage(event) {
   const text = event.data instanceof Blob ? await event.data.text() : event.data;
   let data;
@@ -495,6 +671,7 @@ async function handleMessage(event) {
   if (!content) return;
 
   if (content.interrupted === true) {
+    clearPendingTurnFinalization();
     clearAudioQueue();
     removeAiThinking();
     aiTextBuffer = '';
@@ -516,51 +693,18 @@ async function handleMessage(event) {
 
   if (content.inputTranscription?.text) {
     userTextBuffer += content.inputTranscription.text;
+    scheduleTurnFinalization();
   }
 
   if (content.outputTranscription?.text) {
     aiTextBuffer += content.outputTranscription.text;
+    scheduleTurnFinalization();
   }
 
   if (!content.turnComplete) return;
-
-  const userText = userTextBuffer.trim();
-  if (userText) {
-    if (!sessionStarted && /よろしくお願い/.test(userText)) sessionStarted = true;
-    addMessage('user', userText);
-  }
-  userTextBuffer = '';
-  removeAiThinking();
-
-  const aiText = aiTextBuffer.trim();
-  const interviewClosing = aiText && isInterviewClosing(aiText);
-  if (aiText) {
-    const detectedQuestion = extractQuestionNumber(aiText);
-    if (detectedQuestion && detectedQuestion >= questionCount) {
-      sessionStarted = true;
-      updateQCounter(detectedQuestion);
-    } else if (sessionStarted && questionCount === 0) {
-      updateQCounter(1);
-    }
-    if (isReverseQuestionStart(aiText)) showReverseQuestionProgress();
-    addMessage('interviewer', aiText, detectedQuestion);
-  }
-  aiTextBuffer = '';
-  isAwaitingModel = false;
-
-  // 逆質問が終わったことを示す定型クロージングを最後まで再生してから総評を生成する。
-  if (interviewClosing) {
-    pendingAutoEnd = true;
-    setNextButton({ visible: true, disabled: true });
-    if (!isPlayingAudio && audioQueue.length === 0) {
-      pendingAutoEnd = false;
-      endSession();
-    }
-    return;
-  }
-
-  pendingCaptureAfterPlayback = true;
-  if (!isPlayingAudio && audioQueue.length === 0) beginAnswerRecording();
+  // Live APIでは文字起こしとturnCompleteの到着順が保証されない。
+  turnCompletePending = true;
+  scheduleTurnFinalization();
 }
 
 // ===== システムプロンプト =====
@@ -682,6 +826,7 @@ function validateInputs() {
 async function startSession() {
   if (!validateInputs()) return;
 
+  activeCorrectionSession++;
   interviewQuestionTarget = readQuestionCount();
   interviewFollowUpIntensity = $('followUpIntensity').value;
   conversationLog = [];
@@ -694,6 +839,8 @@ async function startSession() {
   pendingAutoEnd = false;
   userTextBuffer = '';
   aiTextBuffer = '';
+  pendingTranscriptCorrections = new Set();
+  clearPendingTurnFinalization();
   $('transcriptBox').innerHTML = `
     <div class="placeholder" id="placeholder">
       接続後、「よろしくお願いします」と話して回答送信ボタンを押してください。
@@ -704,7 +851,7 @@ async function startSession() {
   setInterviewStructureDisabled(true);
   setNextButton({ visible: true, disabled: true });
   $('reviewPanel').classList.remove('show');
-  $('qCounter').classList.remove('active');
+  $('qCounter')?.classList.remove('active');
   renderQuestionDots(interviewQuestionTarget);
 
   setStatus('接続中...', 'idle');
@@ -817,6 +964,7 @@ async function startMicCapture() {
 // ===== セッション終了・後片付け =====
 function endSession() {
   if (!isSessionActive) return;
+  clearPendingTurnFinalization();
   isSessionActive = false;
   isAnswerRecording = false;
   isAwaitingModel = false;
@@ -825,14 +973,23 @@ function endSession() {
   clearAudioQueue();
   stopTimer();
 
-  if (userTextBuffer.trim()) {
-    conversationLog.push({ role: 'candidate', text: userTextBuffer.trim() });
-    userTextBuffer = '';
+  const previousInterviewerText = getLastInterviewerText();
+  const remainingUserText = userTextBuffer.trim();
+  const remainingAiText = aiTextBuffer.trim();
+  const candidateMessage = remainingUserText
+    ? addMessage('user', remainingUserText)
+    : null;
+  if (remainingAiText) addMessage('interviewer', remainingAiText);
+  if (candidateMessage) {
+    correctCandidateMessage(candidateMessage, {
+      rawText: remainingUserText,
+      previousInterviewerText,
+      followingInterviewerText: remainingAiText,
+      isReverseQuestionTurn: isReverseQuestionContext(previousInterviewerText)
+    });
   }
-  if (aiTextBuffer.trim()) {
-    conversationLog.push({ role: 'interviewer', text: aiTextBuffer.trim() });
-    aiTextBuffer = '';
-  }
+  userTextBuffer = '';
+  aiTextBuffer = '';
 
   stopMediaResources();
   if (ws && ws.readyState === WebSocket.OPEN) ws.close(1000);
@@ -843,7 +1000,7 @@ function endSession() {
     if (questionCount === interviewQuestionTarget) dot.classList.add('done');
   });
   showStoppedControls();
-  setStatus('面談終了。総評を生成しています...', 'idle');
+  setStatus('面談終了。会話ログを確認しています...', 'idle');
   generateReview();
 }
 
@@ -870,6 +1027,7 @@ function showStoppedControls() {
 }
 
 function cleanupSession(statusMessage) {
+  clearPendingTurnFinalization();
   isSessionActive = false;
   isAnswerRecording = false;
   isAwaitingModel = false;
@@ -915,7 +1073,7 @@ async function generateReview() {
   $('reviewContent').innerHTML = `
     <div class="review-generating">
       <div class="review-spinner"></div>
-      商談総評レポートを生成しています...
+      会話ログの補正を確認しています...
     </div>`;
   setTimeout(() => $('reviewPanel').scrollIntoView({ behavior: 'smooth', block: 'start' }), 300);
 
@@ -924,6 +1082,14 @@ async function generateReview() {
   const skillSheet = $('skillSheet').value.trim() || '（スキルシート未設定）';
 
   try {
+    await waitForPendingTranscriptCorrections();
+    $('reviewContent').innerHTML = `
+      <div class="review-generating">
+        <div class="review-spinner"></div>
+        商談総評レポートを生成しています...
+      </div>`;
+    setStatus('面談終了。総評を生成しています...', 'idle');
+
     const response = await fetch('/api/review', {
       method: 'POST',
       headers: {
@@ -1075,6 +1241,7 @@ export function initializeInterviewApp() {
     isSessionActive = false;
     isAnswerRecording = false;
     isAwaitingModel = false;
+    clearPendingTurnFinalization();
     clearAudioQueue();
     stopTimer();
     stopMediaResources();

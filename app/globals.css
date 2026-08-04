@@ -408,33 +408,6 @@
 
   .timer.active { display: block; }
 
-  /* 質問カウンター */
-  .q-counter {
-    display: none;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--navy-light);
-  }
-
-  .q-counter.active { display: flex; }
-
-  .q-dots { display: flex; gap: 4px; flex-wrap: wrap; }
-
-  .q-dot {
-    width: 9px; height: 9px;
-    border-radius: 50%;
-    background: var(--border);
-    border: 1.5px solid var(--border-strong);
-    transition: all 0.3s;
-  }
-
-  .q-dot.done { background: var(--green); border-color: var(--green); }
-  .q-dot.current { background: var(--blue); border-color: var(--blue); animation: pulse-dot 1.5s infinite; }
-
-  @keyframes pulse-dot { 0%,100%{transform:scale(1)} 50%{transform:scale(1.3)} }
-
   /* ===== 波形 ===== */
   .visualizer-wrap { width: 100%; height: 56px; background: var(--surface2); border-radius: 6px; overflow: hidden; }
   #visualizer { width: 100%; height: 100%; display: block; }
