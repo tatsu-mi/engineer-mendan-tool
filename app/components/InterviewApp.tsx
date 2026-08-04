@@ -256,6 +256,12 @@ export default function InterviewApp() {
               </div>
             </div>
 
+            <div className="q-counter" id="qCounter">
+              <span className="progress-label">質問進捗</span>
+              <div className="q-dots" id="qDots" />
+              <span className="progress-label" id="qLabel">— / 7問</span>
+            </div>
+
             <div className="visualizer-wrap">
               <canvas id="visualizer" />
             </div>
