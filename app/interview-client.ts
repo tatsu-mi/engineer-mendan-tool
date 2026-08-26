@@ -300,6 +300,7 @@ function startTimer() {
   elapsedSeconds = 0;
   $('timer').textContent = '00:00';
   $('timer').classList.add('active');
+  $('liveLabel')?.classList.add('active');
   timerInterval = setInterval(() => {
     elapsedSeconds++;
     const minutes = String(Math.floor(elapsedSeconds / 60)).padStart(2, '0');
@@ -312,6 +313,7 @@ function stopTimer() {
   clearInterval(timerInterval);
   timerInterval = null;
   $('timer').classList.remove('active');
+  $('liveLabel')?.classList.remove('active');
 }
 
 // ===== API Key =====
@@ -451,7 +453,7 @@ function startVisualizer(analyserNode) {
     for (let i = 0; i < count; i++) {
       const value = buffer[Math.floor(i * buffer.length / count)] / 255;
       const barHeight = value * height * 0.85;
-      ctx.fillStyle = `rgba(56,74,157,${0.15 + value * 0.85})`;
+      ctx.fillStyle = `rgba(89,104,172,${0.15 + value * 0.85})`;
       ctx.fillRect(i * (barWidth + 1), (height - barHeight) / 2, barWidth, barHeight);
     }
   }
@@ -1256,25 +1258,25 @@ function renderReview(review) {
       <div class="review-sections">
         <div class="review-section">
           <div class="review-section-header">
-            <span class="review-section-icon">💻</span>技術力・経験の適合性
+            <span class="review-section-icon">01</span>技術力・経験の適合性
           </div>
           <div class="review-section-body">${escapeHtml(review.technical)}</div>
         </div>
         <div class="review-section">
           <div class="review-section-header">
-            <span class="review-section-icon">💬</span>コミュニケーション能力
+            <span class="review-section-icon">02</span>コミュニケーション能力
           </div>
           <div class="review-section-body">${escapeHtml(review.communication)}</div>
         </div>
         <div class="review-section">
           <div class="review-section-header">
-            <span class="review-section-icon">🔥</span>姿勢・意欲
+            <span class="review-section-icon">03</span>姿勢・意欲
           </div>
           <div class="review-section-body">${escapeHtml(review.attitude)}</div>
         </div>
         <div class="review-section review-feedback">
           <div class="review-section-header">
-            <span class="review-section-icon">📝</span>技術者へのフィードバック
+            <span class="review-section-icon">04</span>技術者へのフィードバック
           </div>
           <div class="review-section-body">${escapeHtml(review.feedback)}</div>
         </div>
