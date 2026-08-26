@@ -310,9 +310,6 @@ export default function InterviewApp() {
           <div id="reviewContent" />
         </section>
 
-        <footer>
-          面談練習ツール — © Beeline
-        </footer>
       </main>
     </>
   );
