@@ -451,7 +451,7 @@ function startVisualizer(analyserNode) {
     for (let i = 0; i < count; i++) {
       const value = buffer[Math.floor(i * buffer.length / count)] / 255;
       const barHeight = value * height * 0.85;
-      ctx.fillStyle = `rgba(29,78,216,${0.15 + value * 0.85})`;
+      ctx.fillStyle = `rgba(56,74,157,${0.15 + value * 0.85})`;
       ctx.fillRect(i * (barWidth + 1), (height - barHeight) / 2, barWidth, barHeight);
     }
   }
@@ -1213,8 +1213,8 @@ function showReviewError(message) {
 
 // ===== 総評レンダリング =====
 function renderReview(review) {
-  const badgeColors = { '◎': '#059669', '○': '#1d4ed8', '△': '#d97706', '×': '#dc2626' };
-  const badgeColor = badgeColors[review.overall] || '#1d4ed8';
+  const badgeColors = { '◎': '#059669', '○': '#384a9d', '△': '#d97706', '×': '#dc2626' };
+  const badgeColor = badgeColors[review.overall] || '#384a9d';
   const overallLabels = { '◎': '強く推奨', '○': '推奨', '△': '要検討', '×': '見送り' };
 
   function pipBar(score, max = 5) {

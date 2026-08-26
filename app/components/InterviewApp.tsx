@@ -25,11 +25,7 @@ export default function InterviewApp() {
     <>
       <header className="app-header">
         <div className="header-logo">
-          <div className="header-logo-icon" aria-hidden="true">面</div>
-          <div className="header-title">The面談<span>forSES</span></div>
-        </div>
-        <div className="header-right">
-          <div className="header-sub">Gemini 3.1 Flash Live API</div>
+          <div className="header-title">面談練習ツール</div>
         </div>
       </header>
 
@@ -315,7 +311,7 @@ export default function InterviewApp() {
         </section>
 
         <footer>
-          The面談forSES — Powered by Gemini 3.1 Flash Live API — © Beeline
+          面談練習ツール — © Beeline
         </footer>
       </main>
     </>

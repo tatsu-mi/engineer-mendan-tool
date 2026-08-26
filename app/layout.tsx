@@ -3,8 +3,8 @@ import type { ReactNode } from 'react';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'The面談forSES',
-  description: 'Gemini Live APIを利用したSES技術者向けAI面談ツール'
+  title: '面談練習ツール',
+  description: 'SES技術者向けAI面談練習ツール'
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
