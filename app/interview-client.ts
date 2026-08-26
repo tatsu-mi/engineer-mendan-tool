@@ -959,6 +959,9 @@ async function startSession() {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Charon' } }
           }
         },
+        contextWindowCompression: {
+          slidingWindow: {}
+        },
         realtimeInputConfig: {
           automaticActivityDetection: { disabled: true }
         },
