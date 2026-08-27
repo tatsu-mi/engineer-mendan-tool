@@ -1,8 +1,13 @@
 'use client';
 
 import { useEffect } from 'react';
+import SignOutButton from './SignOutButton';
 
-export default function InterviewApp() {
+type InterviewAppProps = {
+  userEmail: string;
+};
+
+export default function InterviewApp({ userEmail }: InterviewAppProps) {
   useEffect(() => {
     let active = true;
     let cleanup: (() => void) | undefined;
@@ -91,9 +96,12 @@ export default function InterviewApp() {
         <a className="brand" href="#top" aria-label="面談練習 ホーム">
           <span className="brand-product">エンジニア向けAI面談練習ツール</span>
         </a>
-        <div className="header-context">
-          <span className="header-context-dot" aria-hidden="true" />
-          AI interview workspace
+        <div className="header-account">
+          <div className="header-context">
+            <span className="header-context-dot" aria-hidden="true" />
+            <span className="header-email">{userEmail}</span>
+          </div>
+          <SignOutButton />
         </div>
       </header>
 

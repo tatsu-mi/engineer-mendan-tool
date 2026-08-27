@@ -6,6 +6,7 @@ import {
   readApiKey,
   readGeminiResponse
 } from '../_shared/gemini';
+import { requireAuthenticatedUser } from '../_shared/auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -20,6 +21,9 @@ function isText(value: unknown, maxLength: number): value is string {
 }
 
 export async function POST(request: Request) {
+  const authentication = await requireAuthenticatedUser();
+  if (authentication.response) return authentication.response;
+
   const apiKey = readApiKey(request);
   if (!apiKey) return noStoreJson({ error: 'APIキーを入力してください。' }, { status: 400 });
 

@@ -8,6 +8,7 @@ Gemini Live APIを利用したSES技術者向けAI面談ツールです。Next.j
 - 面談構成: 主質問数（1〜20問）と深掘り強度を指定し、開始前に案件・スキルシートから全主質問を確定して1問ずつ進行
 - 逆質問: 主質問とは別に必ず実施し、候補者が質問終了を明示するまで「他にはいかがですか？」と継続
 - バックエンド: Live API用の短命トークン発行、PDF解析、総評レポート生成
+- 認証: Microsoft Entra IDによる社員ログイン。未認証時は面談画面と各APIを利用できません
 - APIキー: 画面で入力し、必要なリクエストごとにRoute Handlerへ送信（サーバーやブラウザには永続保存しません）
 
 Excel取込には対応していません。PDFはVercel Functionsのペイロード制限を考慮し、4MBまでです。
@@ -21,11 +22,30 @@ npm install
 npm run dev
 ```
 
-ブラウザで `http://localhost:3000` を開きます。音声入力にはブラウザのマイク権限が必要です。
+`.env.example` を `.env.local` へコピーし、Entra IDの値を設定してください。
+
+```bash
+openssl rand -base64 32
+```
+
+で生成した値を `AUTH_SECRET` に設定します。ブラウザで `http://localhost:3000` を開きます。音声入力にはブラウザのマイク権限が必要です。
+
+## Microsoft Entra ID
+
+Entra管理センターの「アプリの登録」で、このアプリ用のシングルテナントアプリを登録します。
+
+1. サポートされているアカウントの種類は「この組織ディレクトリのみに含まれるアカウント」を選択
+2. プラットフォーム「Web」にリダイレクトURIを登録
+   - ローカル: `http://localhost:3000/api/auth/callback/microsoft-entra-id`
+   - 本番: `https://<本番ドメイン>/api/auth/callback/microsoft-entra-id`
+3. クライアントシークレットを作成
+4. `.env.example` に記載した4つの環境変数を設定
+
+ログインユーザーの識別には、Entra IDが返す `email` を小文字に正規化して使用します。`email` がない場合は、メール形式の `preferred_username` を使用します。どちらも取得できないアカウントはログインできません。
 
 ## Vercel
 
-このリポジトリをVercelへImportしてデプロイしてください。環境変数は不要です。APIキーは画面から入力します。
+このリポジトリをVercelへImportしてデプロイし、`.env.example` の4項目をVercelの環境変数に登録してください。Google AI Studio APIキーは従来どおり画面から入力します。
 
 ```bash
 npm run build
