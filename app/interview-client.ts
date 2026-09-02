@@ -13,6 +13,9 @@ const MAX_INTERVIEW_CUSTOMIZATION_CHARS = 1000;
 const TRANSCRIPTION_SETTLE_MS = 800;
 const TRANSCRIPT_CORRECTION_TIMEOUT_MS = 25 * 1000;
 const MAX_CORRECTION_DOMAIN_CONTEXT_CHARS = 20000;
+const OUTPUT_AUDIO_SAMPLE_RATE = 24000;
+const AUDIO_INITIAL_BUFFER_SECONDS = 0.18;
+const AUDIO_DIAGNOSTIC_INTERVAL_CHUNKS = 20;
 
 // ===== 状態 =====
 let ws = null;
@@ -28,10 +31,16 @@ let mediaStream = null;
 let scriptProcessor = null;
 let audioQueue = [];
 let isPlayingAudio = false;
+let audioSchedulingPromise = null;
+let scheduledAudioSources = new Set();
+let nextAudioStartTime = 0;
+let audioPlaybackGeneration = 0;
+let audioChunkCount = 0;
+let audioUnderrunCount = 0;
+let lastAudioChunkReceivedAt = 0;
 let inputAnalyser = null;
 let outputAnalyser = null;
 let visualizerRaf = null;
-let activeSource = null;
 let userTextBuffer = '';
 let aiTextBuffer = '';
 let turnCompletePending = false;
@@ -613,69 +622,164 @@ function submitAnswer() {
   setNextButton({ visible: true, disabled: true });
   setStatus('回答を送信しました。面接官が考えています...', 'connected');
   showAiThinking();
+  resetAudioDiagnostics();
   ws.send(JSON.stringify({ realtimeInput: { text: buildTurnInstruction() } }));
   ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
 }
 
 // ===== 音声再生キュー =====
 async function enqueueAudio(base64) {
+  const receivedAt = performance.now();
+  const arrivalGapMs = lastAudioChunkReceivedAt
+    ? Math.round(receivedAt - lastAudioChunkReceivedAt)
+    : 0;
+  lastAudioChunkReceivedAt = receivedAt;
+  audioChunkCount++;
+
+  if (
+    audioChunkCount > 1
+    && scheduledAudioSources.size === 0
+    && !audioSchedulingPromise
+  ) {
+    audioUnderrunCount++;
+    console.warn('[Audio diagnostics] Playback buffer underrun detected.', {
+      chunk: audioChunkCount,
+      arrivalGapMs,
+      underruns: audioUnderrunCount
+    });
+  }
+
   audioQueue.push(base64);
-  if (!isPlayingAudio) await drainAudioQueue();
+  await scheduleAudioQueue();
 }
 
-async function drainAudioQueue() {
-  if (audioQueue.length === 0) {
-    isPlayingAudio = false;
+async function scheduleAudioQueue() {
+  if (audioSchedulingPromise) return audioSchedulingPromise;
 
-    if (pendingAutoEnd && isSessionActive) {
-      pendingAutoEnd = false;
-      endSession();
-      return;
-    }
+  audioSchedulingPromise = drainAudioQueue();
+  try {
+    await audioSchedulingPromise;
+  } finally {
+    audioSchedulingPromise = null;
+  }
 
-    if (pendingCaptureAfterPlayback && isSessionActive) beginAnswerRecording();
+  // AudioContextの再開待ちの間に届いたチャンクも取りこぼさず予約する。
+  if (audioQueue.length > 0) await scheduleAudioQueue();
+}
+
+function finishAudioPlaybackIfIdle() {
+  if (audioQueue.length > 0 || scheduledAudioSources.size > 0) return;
+
+  isPlayingAudio = false;
+  nextAudioStartTime = 0;
+
+  if (audioChunkCount > 0) {
+    console.debug('[Audio diagnostics] Playback completed.', {
+      chunks: audioChunkCount,
+      underruns: audioUnderrunCount
+    });
+  }
+
+  if (pendingAutoEnd && isSessionActive) {
+    pendingAutoEnd = false;
+    endSession();
     return;
   }
 
-  isPlayingAudio = true;
-  setStatus('面接官が話しています...', 'playing');
+  if (pendingCaptureAfterPlayback && isSessionActive) beginAnswerRecording();
+}
+
+async function drainAudioQueue() {
+  const generation = audioPlaybackGeneration;
   try {
     if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
     if (audioContext.state === 'suspended') await audioContext.resume();
+    if (generation !== audioPlaybackGeneration) return;
+
     if (!outputAnalyser) {
       outputAnalyser = audioContext.createAnalyser();
       outputAnalyser.fftSize = 256;
       outputAnalyser.connect(audioContext.destination);
     }
-    const float32 = base64ToFloat32(audioQueue.shift());
-    const audioBuffer = audioContext.createBuffer(1, float32.length, 24000);
-    audioBuffer.copyToChannel(float32, 0);
-    const source = audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(outputAnalyser);
-    activeSource = source;
-    source.start();
-    source.onended = () => {
-      activeSource = null;
-      drainAudioQueue();
-    };
+
+    if (scheduledAudioSources.size === 0) {
+      // 最初の数チャンクを受け取る余裕を作り、短いネットワーク揺らぎを吸収する。
+      nextAudioStartTime = audioContext.currentTime + AUDIO_INITIAL_BUFFER_SECONDS;
+    }
+
+    isPlayingAudio = true;
+    setStatus('面接官が話しています...', 'playing');
+
+    while (audioQueue.length > 0 && generation === audioPlaybackGeneration) {
+      const float32 = base64ToFloat32(audioQueue.shift());
+      const audioBuffer = audioContext.createBuffer(1, float32.length, OUTPUT_AUDIO_SAMPLE_RATE);
+      audioBuffer.copyToChannel(float32, 0);
+
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(outputAnalyser);
+
+      if (nextAudioStartTime > 0 && nextAudioStartTime < audioContext.currentTime) {
+        audioUnderrunCount++;
+        console.warn('[Audio diagnostics] Audio scheduling fell behind playback.', {
+          chunk: audioChunkCount,
+          behindMs: Math.round((audioContext.currentTime - nextAudioStartTime) * 1000),
+          underruns: audioUnderrunCount
+        });
+      }
+      const startAt = Math.max(nextAudioStartTime, audioContext.currentTime + 0.005);
+      source.onended = () => {
+        try {
+          source.disconnect();
+        } catch (_) {
+          // セッション終了処理ですでに切断されている場合は何もしない
+        }
+        if (generation !== audioPlaybackGeneration) return;
+        scheduledAudioSources.delete(source);
+        finishAudioPlaybackIfIdle();
+      };
+      source.start(startAt);
+      scheduledAudioSources.add(source);
+      nextAudioStartTime = startAt + audioBuffer.duration;
+
+      if (audioChunkCount % AUDIO_DIAGNOSTIC_INTERVAL_CHUNKS === 0) {
+        console.debug('[Audio diagnostics] Playback buffer status.', {
+          chunk: audioChunkCount,
+          bufferedMs: Math.max(0, Math.round((nextAudioStartTime - audioContext.currentTime) * 1000)),
+          scheduledSources: scheduledAudioSources.size,
+          underruns: audioUnderrunCount
+        });
+      }
+    }
   } catch (error) {
     console.error('Audio error:', error);
-    drainAudioQueue();
+    audioQueue = [];
   }
+
+  finishAudioPlaybackIfIdle();
+}
+
+function resetAudioDiagnostics() {
+  audioChunkCount = 0;
+  audioUnderrunCount = 0;
+  lastAudioChunkReceivedAt = 0;
 }
 
 function clearAudioQueue() {
+  audioPlaybackGeneration++;
   audioQueue = [];
   isPlayingAudio = false;
-  if (activeSource) {
+  nextAudioStartTime = 0;
+  for (const source of scheduledAudioSources) {
     try {
-      activeSource.stop();
+      source.stop();
+      source.disconnect();
     } catch (_) {
       // 既に停止済みの場合は何もしない
     }
-    activeSource = null;
   }
+  scheduledAudioSources.clear();
+  resetAudioDiagnostics();
 }
 
 // ===== Live APIメッセージ処理 =====
