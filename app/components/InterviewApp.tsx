@@ -145,7 +145,6 @@ export default function InterviewApp({ userEmail }: InterviewAppProps) {
               </div>
               <div className="apikey-row">
                 <input type="password" className="input-base" id="apiKeyInput" placeholder="APIキーを入力" aria-label="Google AI Studio APIキー" autoComplete="off" />
-                <button className="btn btn-secondary" id="saveApiKeyBtn" type="button">設定</button>
               </div>
             </div>
           </section>
@@ -200,6 +199,10 @@ export default function InterviewApp({ userEmail }: InterviewAppProps) {
                 <div>
                   <label className="field-label" htmlFor="skillSheet">スキルシート内容 <span className="req">必須</span><span className="field-label-note">直接入力も可能</span></label>
                   <textarea className="textarea-base skill-sheet-input" id="skillSheet" rows={9} placeholder={'氏名：山田 太郎\n経験年数：8年\n主なスキル：Java、Spring Boot、AWS、MySQL\n\n【職務経歴】\n2022〜2024年　大手製造業の在庫管理システム開発'} />
+                  <div className="skill-sheet-actions">
+                    <p className="field-hint" id="skillSheetSaveStatus" aria-live="polite">保存済みのスキルシートを読み込んでいます...</p>
+                    <button className="btn btn-secondary" id="updateSkillSheetBtn" type="button">スキルシートを更新</button>
+                  </div>
                 </div>
               </div>
             </section>
@@ -230,7 +233,7 @@ export default function InterviewApp({ userEmail }: InterviewAppProps) {
                 </div>
                 <div className="reverse-question-note">
                   <span className="note-rule" aria-hidden="true" />
-                  <div><strong>逆質問を含みます</strong><p>最後に必ず逆質問の時間を設けます。あなたが「もう質問はありません」と伝えるまで継続します。</p></div>
+                  <div><strong>自己紹介と逆質問は主質問数に含みません</strong><p>最初に自己紹介を伺い、最後は「もう質問はありません」と伝えるまで逆質問を継続します。</p></div>
                 </div>
                 <div>
                   <label className="field-label" htmlFor="interviewCustomization">希望する雰囲気や話し方 <span className="field-label-note">任意</span></label>

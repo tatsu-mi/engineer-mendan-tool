@@ -129,6 +129,8 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .number-input-wrap .input-base { width: 96px; }
 .number-input-wrap > span { color: var(--ink-2); font-size: 11px; }
 .skill-sheet-input { min-height: 210px; }
+.skill-sheet-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 12px; }
+.skill-sheet-actions .field-hint { margin: 0; }
 
 .file-import {
   display: grid; grid-template-columns: 1fr auto; gap: 5px 20px; align-items: center;
@@ -291,8 +293,6 @@ footer { margin: clamp(120px, calc(100vh - 560px), 420px) 0 0 46px; padding-top:
 @media (max-width: 460px) {
   .brand-product { font-size: 13px; }
   .panel-heading, .panel-content, .control-panel { padding-left: 18px; padding-right: 18px; }
-  .apikey-row { flex-direction: column; }
-  .connection-panel .btn { width: 100%; }
   .score-row { grid-template-columns: 1fr; }
   .controls-row .btn { width: 100%; }
 }

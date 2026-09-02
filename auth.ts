@@ -41,13 +41,9 @@ export const { handlers, auth, signIn } = NextAuth({
       const profileTenantId = profile && typeof profile.tid === 'string'
         ? profile.tid.toLowerCase()
         : null;
+      const email = profile ? getEmployeeEmail(profile) : null;
 
-      return Boolean(
-        profile
-        && getEmployeeEmail(profile)
-        && configuredTenantId
-        && profileTenantId === configuredTenantId
-      );
+      return Boolean(email && configuredTenantId && profileTenantId === configuredTenantId);
     },
     jwt({ token, profile }) {
       if (profile) {

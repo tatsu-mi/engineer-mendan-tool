@@ -48,7 +48,12 @@ let interviewQuestions = [];
 let currentQuestionFollowUpCount = 0;
 let reverseQuestionActive = false;
 let sessionStarted = false;
+let selfIntroductionRequested = false;
+let selfIntroductionCompleted = false;
 let setupCompleted = false;
+let skillSheetOriginalFileName = '';
+let currentInterviewId = null;
+let interviewRecordCompleted = false;
 
 // ===== UI =====
 const $ = id => document.getElementById(id);
@@ -81,8 +86,20 @@ function setNextButton({ visible, disabled }) {
 }
 
 function setInterviewStructureDisabled(disabled) {
-  $('questionCount').disabled = disabled;
-  $('followUpIntensity').disabled = disabled;
+  [
+    'projectName',
+    'interviewerRole',
+    'requiredSkills',
+    'projectDetail',
+    'questionCount',
+    'followUpIntensity',
+    'interviewCustomization'
+  ].forEach(id => { $(id).disabled = disabled; });
+}
+
+function setSkillSheetFieldsDisabled(disabled) {
+  $('skillSheet').disabled = disabled;
+  $('updateSkillSheetBtn').disabled = disabled;
 }
 
 function readQuestionCount() {
@@ -146,6 +163,15 @@ function showReverseQuestionProgress() {
   $('qLabel').textContent = `${interviewQuestionTarget} / ${interviewQuestionTarget}問（逆質問中）`;
 }
 
+function showSelfIntroductionProgress() {
+  if (!$('qCounter') || !$('qLabel')) return;
+  $('qCounter').classList.add('active');
+  document.querySelectorAll('.q-dot').forEach(dot => {
+    dot.classList.remove('done', 'current');
+  });
+  $('qLabel').textContent = `自己紹介（主質問 ${questionCount} / ${interviewQuestionTarget}問）`;
+}
+
 function addMessage(role, text, qNum = null) {
   $('placeholder')?.remove();
   const box = $('transcriptBox');
@@ -168,7 +194,15 @@ function addMessage(role, text, qNum = null) {
     </div>`;
   box.appendChild(msg);
   box.scrollTop = box.scrollHeight;
-  const logEntry = { role: isInterviewer ? 'interviewer' : 'candidate', text };
+  const relatedQuestionNumber = qNum
+    || (sessionStarted && !reverseQuestionActive && questionCount > 0 ? questionCount : null);
+  const logEntry = {
+    role: isInterviewer ? 'interviewer' : 'candidate',
+    rawText: text,
+    text,
+    questionNumber: relatedQuestionNumber,
+    spokenAt: new Date().toISOString()
+  };
   conversationLog.push(logEntry);
   return {
     bubble: msg.querySelector('.msg-bubble'),
@@ -316,16 +350,6 @@ function stopTimer() {
   $('liveLabel')?.classList.remove('active');
 }
 
-// ===== API Key =====
-function saveApiKey() {
-  const key = $('apiKeyInput').value.trim();
-  if (!key) {
-    showError('APIキーを入力してください');
-    return;
-  }
-  setStatus('APIキーを設定しました。');
-}
-
 function getApiKey() {
   return $('apiKeyInput').value.trim();
 }
@@ -341,6 +365,68 @@ function updateQuestionCountPreview() {
   if (isSessionActive) return;
   const count = readQuestionCount();
   if (count) renderQuestionDots(count);
+}
+
+// ===== ログインユーザーのスキルシート =====
+async function loadSkillSheet() {
+  const status = $('skillSheetSaveStatus');
+  try {
+    const response = await fetch('/api/skill-sheet', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'スキルシートを取得できませんでした。');
+    }
+
+    if (data.skillSheet) {
+      $('skillSheet').value = data.skillSheet.content || '';
+      skillSheetOriginalFileName = data.skillSheet.originalFileName || '';
+      status.textContent = 'ログインユーザーの保存済みスキルシートを表示しています。';
+      setSkillSheetImportStatus('保存済みのスキルシートを読み込みました。');
+    } else {
+      status.textContent = '未保存です。更新ボタン、または初回の面談開始時に保存されます。';
+      setSkillSheetImportStatus('PDFの取り込み、または直接入力ができます。');
+    }
+  } catch (error) {
+    status.textContent = '保存済みのスキルシートを取得できませんでした。';
+    showError(error.message);
+  }
+}
+
+function markSkillSheetEdited() {
+  $('skillSheetSaveStatus').textContent =
+    '変更は未保存です。更新ボタンで上書きできます。面談には現在の入力内容が使われます。';
+}
+
+async function updateSkillSheet() {
+  if (isSkillSheetImporting) {
+    showError('スキルシートの読込完了を待ってください');
+    return;
+  }
+  const content = $('skillSheet').value.trim();
+  if (!content) {
+    showError('スキルシートを入力してください');
+    return;
+  }
+
+  const button = $('updateSkillSheetBtn');
+  const status = $('skillSheetSaveStatus');
+  button.disabled = true;
+  status.textContent = 'スキルシートを更新しています...';
+  try {
+    const response = await fetch('/api/skill-sheet', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, originalFileName: skillSheetOriginalFileName })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'スキルシートを更新できませんでした。');
+    status.textContent = 'スキルシートを更新しました。';
+  } catch (error) {
+    status.textContent = 'スキルシートを更新できませんでした。';
+    showError(error.message);
+  } finally {
+    button.disabled = isSessionActive;
+  }
 }
 
 // ===== PDFスキルシート取込 =====
@@ -419,6 +505,7 @@ async function importSkillSheet(event) {
     }
     $('skillSheet').value = extractedText;
     $('skillSheet').dispatchEvent(new Event('input', { bubbles: true }));
+    skillSheetOriginalFileName = file.name;
     setSkillSheetImportStatus(
       `${file.name} を読み込みました。内容を確認・修正してから面談を開始してください。`,
       'success'
@@ -630,8 +717,11 @@ function finalizeCompletedTurn() {
       sessionStarted = true;
       currentQuestionFollowUpCount = 0;
       updateQCounter(detectedQuestion);
-    } else if (sessionStarted && questionCount === 0) {
+    } else if (selfIntroductionCompleted && questionCount === 0) {
+      sessionStarted = true;
       updateQCounter(1);
+    } else if (selfIntroductionRequested && questionCount === 0) {
+      showSelfIntroductionProgress();
     } else if (
       sessionStarted
       && questionCount > 0
@@ -736,9 +826,16 @@ function buildTurnInstruction() {
 候補者の直前の発言は逆質問です。最初の一文で質問の趣旨を自然に短く言い換えて確認してください。定型的な前置きは使わず、たとえば「参画後のチーム体制についてのご質問ですね」のように会話として自然につなげてください。質問があれば続けて簡潔かつ誠実に答え、最後に「他にはいかがですか？」と尋ねてください。質問がないことを明確に伝えた場合は、「ご質問は以上とのこと、承知しました」と自然に受け止め、続けて正確に「面談は以上です。本日はお時間をいただきありがとうございました。後ほど結果をご連絡いたします」と述べてください。`;
   }
 
-  if (questionCount === 0) {
+  if (!selfIntroductionRequested) {
+    selfIntroductionRequested = true;
     return `[進行制御]
-候補者が開始の挨拶をしたら、余計な前置きをせず、確定済み主質問1を「Q1です。」に続けてそのまま尋ねてください。
+候補者が開始の挨拶をしたら、簡潔に挨拶を返したうえで「それでは最初に、自己紹介をお願いします。」と尋ねてください。自己紹介は主質問に含めず、Q番号を付けないでください。この発言では主質問へ進まないでください。`;
+  }
+
+  if (questionCount === 0) {
+    selfIntroductionCompleted = true;
+    return `[進行制御]
+候補者の自己紹介を要点に絞って最初の一文に自然かつ簡潔に要約して復唱してください。自己紹介は主質問として数えず、復唱にはQ番号を付けないでください。続けて、確定済み主質問1を「Q1です。」に続けてそのまま尋ねてください。
 確定済み主質問1：${interviewQuestions[0]}`;
   }
 
@@ -790,7 +887,9 @@ function buildSystemPrompt() {
 ## ターン進行（必ず守ること）
 候補者の発言は「回答送信」操作で区切られます。回答が確定するまで応答せず、回答確定ごとに1回だけ応答してください。
 
-開始時の挨拶を除き、候補者の回答や逆質問を受けたすべてのターンで、次の質問・説明・終了挨拶へ進む前に、候補者が述べた内容を要点に絞り、最初の一文で必ず自然に要約して復唱してください。長い回答をそのまま繰り返さず、「ご回答は、」のような定型的な前置きも使わず、要約を会話につながる文にしてください。この要約した復唱は会話ログの評価にも使われるため、単なる相づちにせず、回答に含まれる技術、経験、数値、担当範囲、判断理由などの重要な要点を正確に残してください。聞き取れない内容を推測したり、候補者が述べていない事実を補ったりしないでください。
+開始時の挨拶を受けたら、最初に自己紹介を求めてください。自己紹介は主質問数に含めず、Q番号を付けないでください。自己紹介への回答を受けてから、その内容を要約して復唱し、主質問1へ進んでください。
+
+開始時の挨拶を除き、候補者の自己紹介、回答、逆質問を受けたすべてのターンで、次の質問・説明・終了挨拶へ進む前に、候補者が述べた内容を要点に絞り、最初の一文で必ず自然に要約して復唱してください。長い回答をそのまま繰り返さず、「ご回答は、」のような定型的な前置きも使わず、要約を会話につながる文にしてください。この要約した復唱は会話ログの評価にも使われるため、単なる相づちにせず、回答に含まれる技術、経験、数値、担当範囲、判断理由などの重要な要点を正確に残してください。聞き取れない内容を推測したり、候補者が述べていない事実を補ったりしないでください。
 
 各回答ターンには、アプリから「[進行制御]」で始まるテキスト指示が1つ追加されます。
 - 「[進行制御]」の内容は読み上げず、候補者の直前の音声と合わせて、そのターンの発言だけを決める最優先の指示として扱う
@@ -887,19 +986,63 @@ async function generateInterviewQuestions(apiKey) {
   return data.questions;
 }
 
+async function createInterviewRecord() {
+  const response = await fetch('/api/interviews', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      skillSheet: {
+        content: $('skillSheet').value.trim(),
+        originalFileName: skillSheetOriginalFileName
+      },
+      project: {
+        projectName: $('projectName').value.trim(),
+        interviewerRole: $('interviewerRole').value.trim(),
+        requiredSkills: $('requiredSkills').value.trim(),
+        projectDetails: $('projectDetail').value.trim()
+      },
+      configuration: {
+        mainQuestionCount: interviewQuestionTarget,
+        followUpIntensity: interviewFollowUpIntensity,
+        customization: $('interviewCustomization').value.trim()
+      },
+      questions: interviewQuestions
+    })
+  });
+  const data = await response.json();
+  if (!response.ok || !data.interviewId) {
+    throw new Error(data.error || '面談情報を保存できませんでした。');
+  }
+  currentInterviewId = data.interviewId;
+  if (data.skillSheetAutoSaved) {
+    $('skillSheetSaveStatus').textContent = '未保存のスキルシートを自動保存しました。';
+  }
+  interviewRecordCompleted = false;
+}
+
 // ===== セッション開始 =====
 async function startSession() {
+  if (reviewGenerationInProgress) {
+    showError('総評の保存が完了するまでお待ちください。');
+    return;
+  }
   if (!validateInputs()) return;
+
+  if (currentInterviewId && !interviewRecordCompleted) markInterviewInterrupted();
 
   activeCorrectionSession++;
   interviewQuestionTarget = readQuestionCount();
   interviewFollowUpIntensity = $('followUpIntensity').value;
   interviewQuestions = [];
   conversationLog = [];
+  currentInterviewId = null;
+  interviewRecordCompleted = false;
   questionCount = 0;
   currentQuestionFollowUpCount = 0;
   reverseQuestionActive = false;
   sessionStarted = false;
+  selfIntroductionRequested = false;
+  selfIntroductionCompleted = false;
   setupCompleted = false;
   isAnswerRecording = false;
   isAwaitingModel = false;
@@ -916,6 +1059,7 @@ async function startSession() {
   $('startBtn').style.display = 'none';
   $('endBtn').style.display = 'none';
   setSkillSheetFileDisabled(true);
+  setSkillSheetFieldsDisabled(true);
   setInterviewStructureDisabled(true);
   setNextButton({ visible: true, disabled: true });
   $('reviewPanel').classList.remove('show');
@@ -942,6 +1086,13 @@ async function startSession() {
       throw new Error(tokenData.error || 'Live APIトークンを取得できませんでした。');
     }
     token = tokenData.token;
+    if (!isSessionActive) return;
+    setStatus('面談情報を保存しています...', 'idle');
+    await createInterviewRecord();
+    if (!isSessionActive) {
+      markInterviewInterrupted();
+      return;
+    }
   } catch (error) {
     showError(`面談準備に失敗しました: ${error.message}`);
     cleanupSession('面談を開始できませんでした。');
@@ -1038,6 +1189,35 @@ async function startMicCapture() {
 }
 
 // ===== セッション終了・後片付け =====
+async function persistConversationLogs() {
+  if (interviewRecordCompleted) return;
+  if (!currentInterviewId) throw new Error('保存対象の面談IDがありません。');
+
+  const response = await fetch(`/api/interviews/${encodeURIComponent(currentInterviewId)}/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      durationSeconds: elapsedSeconds,
+      conversationLog
+    })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || '会話ログを保存できませんでした。');
+  interviewRecordCompleted = true;
+}
+
+function markInterviewInterrupted() {
+  if (!currentInterviewId || interviewRecordCompleted) return;
+  const interviewId = currentInterviewId;
+  currentInterviewId = null;
+  fetch(`/api/interviews/${encodeURIComponent(interviewId)}/interrupt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ durationSeconds: elapsedSeconds, conversationLog }),
+    keepalive: true
+  }).catch(error => console.warn('Failed to mark interview as interrupted:', error));
+}
+
 function endSession() {
   if (!isSessionActive) return;
   clearPendingTurnFinalization();
@@ -1098,11 +1278,13 @@ function showStoppedControls() {
   $('startBtn').style.display = '';
   $('endBtn').style.display = 'none';
   setSkillSheetFileDisabled(false);
+  setSkillSheetFieldsDisabled(false);
   setInterviewStructureDisabled(false);
   setNextButton({ visible: false, disabled: true });
 }
 
 function cleanupSession(statusMessage) {
+  markInterviewInterrupted();
   clearPendingTurnFinalization();
   isSessionActive = false;
   isAnswerRecording = false;
@@ -1140,11 +1322,13 @@ async function generateReview() {
     return;
   }
   if (conversationLog.length === 0) {
+    markInterviewInterrupted();
     showReviewError('評価できる会話ログがありません。');
     return;
   }
 
   reviewGenerationInProgress = true;
+  $('startBtn').disabled = true;
   $('reviewPanel').classList.add('show');
   $('reviewContent').innerHTML = `
     <div class="review-generating">
@@ -1162,6 +1346,13 @@ async function generateReview() {
     $('reviewContent').innerHTML = `
       <div class="review-generating">
         <div class="review-spinner"></div>
+        会話ログを保存しています...
+      </div>`;
+    setStatus('面談終了。会話ログを保存しています...', 'idle');
+    await persistConversationLogs();
+    $('reviewContent').innerHTML = `
+      <div class="review-generating">
+        <div class="review-spinner"></div>
         商談総評レポートを生成しています...
       </div>`;
     setStatus('面談終了。総評を生成しています...', 'idle');
@@ -1173,6 +1364,7 @@ async function generateReview() {
         'x-gemini-api-key': apiKey
       },
       body: JSON.stringify({
+        interviewId: currentInterviewId,
         projectName,
         requiredSkills,
         skillSheet,
@@ -1200,6 +1392,7 @@ async function generateReview() {
     setStatus('面談終了 — 総評生成に失敗しました', 'idle');
   } finally {
     reviewGenerationInProgress = false;
+    $('startBtn').disabled = false;
   }
 }
 
@@ -1285,35 +1478,40 @@ function renderReview(review) {
 }
 
 export function initializeInterviewApp() {
-  const saveApiKeyButton = $('saveApiKeyBtn');
   const skillSheetFile = $('skillSheetFile');
+  const skillSheetInput = $('skillSheet');
   const customization = $('interviewCustomization');
   const questionCountInput = $('questionCount');
   const startButton = $('startBtn');
   const nextButton = $('nextBtn');
   const endButton = $('endBtn');
+  const updateSkillSheetButton = $('updateSkillSheetBtn');
 
-  saveApiKeyButton.addEventListener('click', saveApiKey);
   skillSheetFile.addEventListener('change', importSkillSheet);
+  skillSheetInput.addEventListener('input', markSkillSheetEdited);
   customization.addEventListener('input', updateInterviewCustomizationCounter);
   questionCountInput.addEventListener('input', updateQuestionCountPreview);
   startButton.addEventListener('click', startSession);
   nextButton.addEventListener('click', submitAnswer);
   endButton.addEventListener('click', endSession);
+  updateSkillSheetButton.addEventListener('click', updateSkillSheet);
 
   updateInterviewCustomizationCounter();
   renderQuestionDots(DEFAULT_QUESTION_COUNT);
   setStatus('案件情報とスキルシートを入力して「面談開始」を押してください');
+  loadSkillSheet();
 
   return () => {
-    saveApiKeyButton.removeEventListener('click', saveApiKey);
     skillSheetFile.removeEventListener('change', importSkillSheet);
+    skillSheetInput.removeEventListener('input', markSkillSheetEdited);
     customization.removeEventListener('input', updateInterviewCustomizationCounter);
     questionCountInput.removeEventListener('input', updateQuestionCountPreview);
     startButton.removeEventListener('click', startSession);
     nextButton.removeEventListener('click', submitAnswer);
     endButton.removeEventListener('click', endSession);
+    updateSkillSheetButton.removeEventListener('click', updateSkillSheet);
 
+    markInterviewInterrupted();
     isSessionActive = false;
     isAnswerRecording = false;
     isAwaitingModel = false;

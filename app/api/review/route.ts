@@ -7,6 +7,7 @@ import {
   readGeminiResponse
 } from '../_shared/gemini';
 import { requireAuthenticatedUser } from '../_shared/auth';
+import { getDatabaseErrorMessage, getSupabaseAdmin } from '../../../lib/supabase-admin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,6 +47,20 @@ function isValidConversation(value: unknown): value is Array<{ role: string; tex
     && value.reduce((total, item) => total + item.text.length, 0) <= 2000000;
 }
 
+function isValidReview(value: unknown) {
+  if (!value || typeof value !== 'object') return false;
+  const review = value as Record<string, any>;
+  return ['◎', '○', '△', '×'].includes(review.overall)
+    && ['技術力', 'コミュニケーション', '総合'].every(key =>
+      Number.isInteger(review.scores?.[key])
+      && review.scores[key] >= 1
+      && review.scores[key] <= 5
+    )
+    && ['technical', 'communication', 'attitude', 'feedback'].every(key =>
+      typeof review[key] === 'string' && review[key].trim().length > 0
+    );
+}
+
 export async function POST(request: Request) {
   const authentication = await requireAuthenticatedUser();
   if (authentication.response) return authentication.response;
@@ -60,9 +75,10 @@ export async function POST(request: Request) {
     return noStoreJson({ error: 'リクエストを読み取れませんでした。' }, { status: 400 });
   }
 
-  const { projectName, requiredSkills, skillSheet, conversationLog } = input;
+  const { interviewId, projectName, requiredSkills, skillSheet, conversationLog } = input;
   if (
-    typeof projectName !== 'string'
+    typeof interviewId !== 'string'
+    || typeof projectName !== 'string'
     || typeof requiredSkills !== 'string'
     || typeof skillSheet !== 'string'
     || !isValidConversation(conversationLog)
@@ -120,7 +136,18 @@ ${logText}
     const data = await readGeminiResponse(response, '総評の生成に失敗しました');
     const rawText = getGeneratedText(data);
     if (!rawText) throw new Error('総評本文が返されませんでした。');
-    return noStoreJson({ review: JSON.parse(rawText) });
+    const review = JSON.parse(rawText);
+    if (!isValidReview(review)) throw new Error('総評に必要な項目が不足しています。');
+
+    const { error } = await getSupabaseAdmin().rpc('save_interview_review', {
+      p_member_id: authentication.memberId,
+      p_interview_id: interviewId,
+      p_review: review
+    });
+    if (error) {
+      throw new Error(getDatabaseErrorMessage(error, '総評を保存できませんでした。'));
+    }
+    return noStoreJson({ review });
   } catch (error) {
     return noStoreJson(
       { error: error instanceof Error ? error.message : '総評の生成に失敗しました。' },
