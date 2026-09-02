@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import SignOutButton from './SignOutButton';
+import AppHeader from './AppHeader';
 
 type InterviewAppProps = {
   userEmail: string;
@@ -15,7 +15,7 @@ export default function InterviewApp({ userEmail }: InterviewAppProps) {
     let navigationLock: string | undefined;
     let navigationUnlockTimer: ReturnType<typeof setTimeout> | undefined;
 
-    const navigationItems = Array.from(document.querySelectorAll<HTMLAnchorElement>('.workflow-item'));
+    const navigationItems = Array.from(document.querySelectorAll<HTMLAnchorElement>('.workflow-item[href^="#"]'));
     const navigationSections = navigationItems
       .map(item => document.querySelector<HTMLElement>(item.hash))
       .filter((section): section is HTMLElement => section !== null);
@@ -92,34 +92,34 @@ export default function InterviewApp({ userEmail }: InterviewAppProps) {
 
   return (
     <div className="app-frame">
-      <header className="app-header">
-        <a className="brand" href="#top" aria-label="面談練習 ホーム">
-          <span className="brand-product">エンジニア向けAI面談練習ツール</span>
-        </a>
-        <div className="header-account">
-          <div className="header-context">
-            <span className="header-context-dot" aria-hidden="true" />
-            <span className="header-email">{userEmail}</span>
-          </div>
-          <SignOutButton />
-        </div>
-      </header>
+      <AppHeader userEmail={userEmail} homeHref="#top" />
 
       <div className="app-layout" id="top">
         <aside className="sidebar" aria-label="面談フロー">
-          <div className="sidebar-label">Workflow</div>
-          <nav className="workflow-nav">
-            <a className="workflow-item active" href="#connection">
-              <span className="workflow-number">01</span>
-              <span><strong>接続設定</strong><small>APIキー</small></span>
-            </a>
-            <a className="workflow-item" href="#preparation">
-              <span className="workflow-number">02</span>
-              <span><strong>面談準備</strong><small>案件・経歴・構成</small></span>
-            </a>
-            <a className="workflow-item" href="#interview">
-              <span className="workflow-number">03</span>
-              <span><strong>面談実施</strong><small>音声面談・会話ログ</small></span>
+          <div className="sidebar-label">Menu</div>
+          <nav className="sidebar-page-nav">
+            <div className="sidebar-menu-section">
+              <a className="sidebar-menu-item active" href="#top">
+                <strong>面談</strong>
+              </a>
+              <div className="workflow-nav workflow-subnav">
+                <a className="workflow-item active" href="#connection">
+                  <span className="workflow-number">01</span>
+                  <span><strong>接続設定</strong><small>APIキー</small></span>
+                </a>
+                <a className="workflow-item" href="#preparation">
+                  <span className="workflow-number">02</span>
+                  <span><strong>面談準備</strong><small>案件・経歴・構成</small></span>
+                </a>
+                <a className="workflow-item" href="#interview">
+                  <span className="workflow-number">03</span>
+                  <span><strong>面談実施</strong><small>音声面談・会話ログ</small></span>
+                </a>
+              </div>
+            </div>
+            <a className="sidebar-menu-item" href="/history">
+              <strong>面談履歴</strong>
+              <small>過去の設定・会話・総評</small>
             </a>
           </nav>
           <div className="sidebar-note">
