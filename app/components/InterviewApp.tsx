@@ -164,6 +164,21 @@ export default function InterviewApp({ userEmail }: InterviewAppProps) {
                 <div><p className="panel-kicker">Project</p><h3>案件情報</h3></div>
               </div>
               <div className="panel-content form-stack">
+                <div className="project-generation">
+                  <div className="project-generation-controls">
+                    <div>
+                      <label className="field-label" htmlFor="projectMatchLevel">生成する案件のマッチ度</label>
+                      <select className="select-base" id="projectMatchLevel" defaultValue="high" aria-describedby="projectGenerationHint">
+                        <option value="high">高 — 経験・スキルに合う案件</option>
+                        <option value="medium">中 — 一部に挑戦が必要な案件</option>
+                        <option value="low">低 — 未経験の要件が多い案件</option>
+                      </select>
+                    </div>
+                    <button className="btn btn-secondary" id="generateProjectBtn" type="button" disabled>スキルシートから案件を生成</button>
+                  </div>
+                  <p className="field-hint" id="projectGenerationHint">下のスキルシートを入力し、マッチ度を選んで練習用の架空案件を生成できます。生成すると以下の4項目を置き換えます。生成後も編集できます。</p>
+                  <p className="project-generation-status" id="projectGenerationStatus" role="status" aria-live="polite" />
+                </div>
                 <div className="two-col">
                   <div>
                     <label className="field-label" htmlFor="projectName">案件名・プロジェクト名 <span className="req">必須</span></label>

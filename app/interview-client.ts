@@ -26,6 +26,8 @@ let pendingCaptureAfterPlayback = false;
 let pendingAutoEnd = false;
 let reviewGenerationInProgress = false;
 let isSkillSheetImporting = false;
+let isSkillSheetLoading = false;
+let projectGenerationController = null;
 let audioContext = null;
 let mediaStream = null;
 let scriptProcessor = null;
@@ -104,6 +106,7 @@ function setInterviewStructureDisabled(disabled) {
     'followUpIntensity',
     'interviewCustomization'
   ].forEach(id => { $(id).disabled = disabled; });
+  updateProjectGenerationControls();
 }
 
 function setSkillSheetFieldsDisabled(disabled) {
@@ -376,8 +379,94 @@ function updateQuestionCountPreview() {
   if (count) renderQuestionDots(count);
 }
 
+// ===== スキルシートから案件生成 =====
+function updateProjectGenerationControls() {
+  $('generateProjectBtn').disabled = isSessionActive || isSkillSheetImporting
+    || isSkillSheetLoading || !!projectGenerationController || reviewGenerationInProgress;
+  $('projectMatchLevel').disabled = isSessionActive || !!projectGenerationController;
+}
+
+async function generateProject() {
+  if (isSessionActive || projectGenerationController || reviewGenerationInProgress) return;
+  const status = $('projectGenerationStatus');
+  const setGenerationStatus = (message, isError = false) => {
+    status.textContent = message;
+    status.classList.toggle('error', isError);
+  };
+  if (isSkillSheetImporting || isSkillSheetLoading) {
+    setGenerationStatus('スキルシートの読込完了を待ってください。', true);
+    return;
+  }
+  const apiKey = getApiKey();
+  const skillSheet = $('skillSheet').value.trim();
+  const matchLevel = $('projectMatchLevel').value;
+  if (!apiKey) {
+    setGenerationStatus('案件の生成にはAPIキーが必要です。接続設定に入力してください。', true);
+    return;
+  }
+  if (!skillSheet || skillSheet.length > MAX_SKILL_SHEET_TEXT_CHARS) {
+    setGenerationStatus('下のスキルシートを1〜120000文字で入力してください。', true);
+    return;
+  }
+  const matchLabels = { high: '高', medium: '中', low: '低' };
+  if (!Object.hasOwn(matchLabels, matchLevel)) {
+    setGenerationStatus('マッチ度は高・中・低から選択してください。', true);
+    return;
+  }
+
+  const controller = new AbortController();
+  projectGenerationController = controller;
+  const timeout = setTimeout(() => controller.abort(), 60000);
+  setInterviewStructureDisabled(true);
+  setSkillSheetFieldsDisabled(true);
+  setSkillSheetFileDisabled(true);
+  $('startBtn').disabled = true;
+  $('generateProjectBtn').textContent = '案件を生成中...';
+  setGenerationStatus(`マッチ度「${matchLabels[matchLevel]}」の案件を生成しています...`);
+
+  try {
+    const response = await fetch('/api/project', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-gemini-api-key': apiKey },
+      body: JSON.stringify({ skillSheet, matchLevel }),
+      signal: controller.signal,
+      cache: 'no-store'
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '案件の生成に失敗しました。');
+    const fieldLimits = { projectName: 1000, interviewerRole: 1000, requiredSkills: 20000, projectDetail: 20000 };
+    if (!Object.entries(fieldLimits).every(([field, limit]) =>
+      typeof data.project?.[field] === 'string'
+      && data.project[field].trim()
+      && data.project[field].length <= limit
+    )) {
+      throw new Error('生成された案件情報の形式が正しくありません。');
+    }
+    if (projectGenerationController !== controller) return;
+    Object.keys(fieldLimits).forEach(field => { $(field).value = data.project[field].trim(); });
+    setGenerationStatus(`マッチ度「${matchLabels[matchLevel]}」の案件を反映しました。内容を確認・編集して面談を開始できます。`);
+  } catch (error) {
+    if (projectGenerationController !== controller) return;
+    setGenerationStatus(controller.signal.aborted
+      ? '案件の生成がタイムアウトしました。再度生成してください。'
+      : `案件の生成に失敗しました: ${error.message}`, true);
+  } finally {
+    clearTimeout(timeout);
+    if (projectGenerationController === controller) {
+      projectGenerationController = null;
+      setInterviewStructureDisabled(isSessionActive);
+      setSkillSheetFieldsDisabled(isSessionActive);
+      setSkillSheetFileDisabled(isSessionActive);
+      $('startBtn').disabled = reviewGenerationInProgress;
+      $('generateProjectBtn').textContent = 'スキルシートから案件を生成';
+    }
+  }
+}
+
 // ===== ログインユーザーのスキルシート =====
 async function loadSkillSheet() {
+  isSkillSheetLoading = true;
+  updateProjectGenerationControls();
   const status = $('skillSheetSaveStatus');
   try {
     const response = await fetch('/api/skill-sheet', { cache: 'no-store' });
@@ -398,6 +487,9 @@ async function loadSkillSheet() {
   } catch (error) {
     status.textContent = '保存済みのスキルシートを取得できませんでした。';
     showError(error.message);
+  } finally {
+    isSkillSheetLoading = false;
+    if ($('generateProjectBtn')) updateProjectGenerationControls();
   }
 }
 
@@ -434,7 +526,7 @@ async function updateSkillSheet() {
     status.textContent = 'スキルシートを更新できませんでした。';
     showError(error.message);
   } finally {
-    button.disabled = isSessionActive;
+    button.disabled = isSessionActive || !!projectGenerationController;
   }
 }
 
@@ -480,8 +572,8 @@ async function importSkillSheet(event) {
   const file = input.files?.[0];
   if (!file) return;
 
-  if (isSessionActive) {
-    showError('面談中はスキルシートを変更できません。');
+  if (isSessionActive || projectGenerationController) {
+    showError('面談中・案件生成中はスキルシートを変更できません。');
     input.value = '';
     return;
   }
@@ -504,6 +596,7 @@ async function importSkillSheet(event) {
   }
 
   isSkillSheetImporting = true;
+  updateProjectGenerationControls();
   setSkillSheetFileDisabled(true);
   setSkillSheetImportStatus(`${file.name} をAIで解析しています...`, 'loading');
 
@@ -525,6 +618,7 @@ async function importSkillSheet(event) {
     showError(message);
   } finally {
     isSkillSheetImporting = false;
+    updateProjectGenerationControls();
     setSkillSheetFileDisabled(false);
     input.value = '';
   }
@@ -1028,6 +1122,10 @@ ${interviewCustomization}
 }
 
 function validateInputs() {
+  if (projectGenerationController) {
+    showError('案件の生成完了を待ってください。');
+    return false;
+  }
   if (isSkillSheetImporting) {
     showError('スキルシートの読込完了を待ってください');
     return false;
@@ -1173,6 +1271,7 @@ async function startSession() {
   setStatus('面談で使用する質問を作成しています...', 'idle');
   const apiKey = getApiKey();
   isSessionActive = true;
+  updateProjectGenerationControls();
 
   let token;
   try {
@@ -1432,6 +1531,7 @@ async function generateReview() {
   }
 
   reviewGenerationInProgress = true;
+  updateProjectGenerationControls();
   $('startBtn').disabled = true;
   $('reviewPanel').classList.add('show');
   $('reviewContent').innerHTML = `
@@ -1496,6 +1596,7 @@ async function generateReview() {
     setStatus('面談終了 — 総評生成に失敗しました', 'idle');
   } finally {
     reviewGenerationInProgress = false;
+    updateProjectGenerationControls();
     $('startBtn').disabled = false;
   }
 }
@@ -1590,6 +1691,7 @@ export function initializeInterviewApp() {
   const nextButton = $('nextBtn');
   const endButton = $('endBtn');
   const updateSkillSheetButton = $('updateSkillSheetBtn');
+  const generateProjectButton = $('generateProjectBtn');
 
   skillSheetFile.addEventListener('change', importSkillSheet);
   skillSheetInput.addEventListener('input', markSkillSheetEdited);
@@ -1599,6 +1701,7 @@ export function initializeInterviewApp() {
   nextButton.addEventListener('click', submitAnswer);
   endButton.addEventListener('click', endSession);
   updateSkillSheetButton.addEventListener('click', updateSkillSheet);
+  generateProjectButton.addEventListener('click', generateProject);
 
   updateInterviewCustomizationCounter();
   renderQuestionDots(DEFAULT_QUESTION_COUNT);
@@ -1614,6 +1717,10 @@ export function initializeInterviewApp() {
     nextButton.removeEventListener('click', submitAnswer);
     endButton.removeEventListener('click', endSession);
     updateSkillSheetButton.removeEventListener('click', updateSkillSheet);
+    generateProjectButton.removeEventListener('click', generateProject);
+    const generationController = projectGenerationController;
+    projectGenerationController = null;
+    generationController?.abort();
 
     markInterviewInterrupted();
     isSessionActive = false;
