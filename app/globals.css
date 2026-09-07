@@ -39,8 +39,6 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .header-email { max-width: 280px; overflow: hidden; text-overflow: ellipsis; text-transform: none; letter-spacing: .02em; white-space: nowrap; }
 .header-signout { padding: 5px 0; color: var(--ink-3); background: transparent; border: 0; cursor: pointer; font-size: 10px; font-weight: 650; }
 .header-signout:hover { color: var(--brand); }
-.header-history-link { color: var(--ink-2); text-decoration: none; font-size: 11px; font-weight: 650; }
-.header-history-link:hover { color: var(--brand); }
 
 .login-page { min-height: 100vh; padding: 32px; display: grid; place-items: center; background: var(--canvas); }
 .login-card { width: min(440px, 100%); padding: 44px; background: var(--surface); border-top: 2px solid var(--brand); box-shadow: 0 18px 55px rgba(27,29,27,.08); }
@@ -379,7 +377,6 @@ footer { margin: clamp(120px, calc(100vh - 560px), 420px) 0 0 46px; padding-top:
   .review-top, .review-sections { grid-template-columns: 1fr; }
   .score-row { grid-template-columns: 1fr 1fr 1fr; }
   footer { margin-top: 64px; gap: 12px; flex-direction: column; }
-  .header-history-link { display: inline; }
   .history-heading, .detail-heading { align-items: stretch; flex-direction: column; }
   .member-filter { width: 100%; }
   .history-card { align-items: flex-start; }
@@ -394,7 +391,6 @@ footer { margin: clamp(120px, calc(100vh - 560px), 420px) 0 0 46px; padding-top:
   .panel-heading, .panel-content, .control-panel { padding-left: 18px; padding-right: 18px; }
   .score-row { grid-template-columns: 1fr; }
   .controls-row .btn { width: 100%; }
-  .header-history-link { font-size: 10px; }
   .history-card { flex-direction: column; gap: 14px; }
   .history-card-review { width: 100%; justify-content: flex-end; }
   .detail-scores { grid-template-columns: 1fr; }
