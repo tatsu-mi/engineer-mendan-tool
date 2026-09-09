@@ -1,4 +1,4 @@
-# 面談練習ツール
+# engineer-mendan-tool（面談練習ツール）
 
 Gemini Live APIを利用したSES技術者向けAI面談ツールです。Next.js App Routerで構成し、Vercelへそのままデプロイできます。
 
