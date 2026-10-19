@@ -16,9 +16,16 @@ const MAX_CORRECTION_DOMAIN_CONTEXT_CHARS = 20000;
 const OUTPUT_AUDIO_SAMPLE_RATE = 24000;
 const AUDIO_INITIAL_BUFFER_SECONDS = 0.18;
 const AUDIO_DIAGNOSTIC_INTERVAL_CHUNKS = 20;
+const LIVE_CONNECTION_TIMEOUT_MS = 20000;
+const MAX_LIVE_RECONNECT_ATTEMPTS = 3;
 
 // ===== 状態 =====
 let ws = null;
+let liveConnectionGeneration = 0;
+let sessionResumptionHandle = null;
+let liveReconnectInProgress = false;
+let liveRotationRequested = false;
+let liveGoAwayTimer = null;
 let isSessionActive = false;
 let isAnswerRecording = false;
 let isAwaitingModel = false;
@@ -693,7 +700,17 @@ function base64ToFloat32(base64) {
 
 // ===== 回答ターン制御 =====
 function beginAnswerRecording() {
-  if (!isSessionActive || !ws || ws.readyState !== WebSocket.OPEN || isAwaitingModel) return;
+  if (!isSessionActive || liveReconnectInProgress || !setupCompleted
+    || !ws || ws.readyState !== WebSocket.OPEN || isAwaitingModel) return;
+  if (liveRotationRequested) {
+    if (sessionResumptionHandle) reconnectLiveSession();
+    else {
+      pendingCaptureAfterPlayback = true;
+      setNextButton({ visible: true, disabled: true });
+      setStatus('接続の更新を待っています。少しお待ちください...', 'idle');
+    }
+    return;
+  }
   ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
   isAnswerRecording = true;
   pendingCaptureAfterPlayback = false;
@@ -961,8 +978,9 @@ function finalizeCompletedTurn() {
   if (!isPlayingAudio && audioQueue.length === 0) beginAnswerRecording();
 }
 
-async function handleMessage(event) {
+async function handleMessage(event, socket = ws) {
   const text = event.data instanceof Blob ? await event.data.text() : event.data;
+  if (!isSessionActive || socket !== ws) return;
   let data;
   try {
     data = JSON.parse(text);
@@ -972,8 +990,36 @@ async function handleMessage(event) {
 
   if (data.setupComplete !== undefined) {
     setupCompleted = true;
-    startTimer();
-    beginAnswerRecording();
+    if (!timerInterval) startTimer();
+    if (!liveReconnectInProgress) beginAnswerRecording();
+    return;
+  }
+
+  if (data.sessionResumptionUpdate) {
+    const update = data.sessionResumptionUpdate;
+    // 古いチェックポイントで再開すると生成途中の会話が欠落するため、
+    // サーバーが再開可能と通知した状態だけを利用する。
+    sessionResumptionHandle = update.resumable && update.newHandle ? update.newHandle : null;
+    if (liveRotationRequested && !isAnswerRecording && !isAwaitingModel
+      && !turnCompletePending && sessionResumptionHandle) reconnectLiveSession();
+    return;
+  }
+
+  if (data.goAway) {
+    liveRotationRequested = true;
+    // 可能なら回答・再生の区切りで切り替える。期限直前には録音を一時停止する。
+    const seconds = Number.parseFloat(data.goAway.timeLeft);
+    clearTimeout(liveGoAwayTimer);
+    liveGoAwayTimer = setTimeout(() => {
+      if (!isSessionActive || socket !== ws) return;
+      if (sessionResumptionHandle && !isAwaitingModel) reconnectLiveSession();
+      else {
+        showError('接続の更新に失敗しました。会話ログを保存して面談を終了します。');
+        cleanupSession('接続を再開できませんでした。もう一度面談を開始してください。');
+      }
+    }, Number.isFinite(seconds) ? Math.max(0, seconds * 1000 - 2000) : 0);
+    if (sessionResumptionHandle && !isAnswerRecording && !isAwaitingModel
+      && !turnCompletePending) reconnectLiveSession();
     return;
   }
 
@@ -1232,6 +1278,7 @@ async function startSession() {
 
   if (currentInterviewId && !interviewRecordCompleted) markInterviewInterrupted();
 
+  closeLiveConnection();
   activeCorrectionSession++;
   interviewQuestionTarget = readQuestionCount();
   interviewFollowUpIntensity = $('followUpIntensity').value;
@@ -1273,22 +1320,8 @@ async function startSession() {
   isSessionActive = true;
   updateProjectGenerationControls();
 
-  let token;
   try {
     interviewQuestions = await generateInterviewQuestions(apiKey);
-    if (!isSessionActive) return;
-    setStatus('質問を確定しました。面接官へ接続しています...', 'idle');
-
-    const tokenResponse = await fetch('/api/live-token', {
-      method: 'POST',
-      headers: { 'x-gemini-api-key': apiKey },
-      cache: 'no-store'
-    });
-    const tokenData = await tokenResponse.json();
-    if (!tokenResponse.ok || !tokenData.token) {
-      throw new Error(tokenData.error || 'Live APIトークンを取得できませんでした。');
-    }
-    token = tokenData.token;
     if (!isSessionActive) return;
     setStatus('面談情報を保存しています...', 'idle');
     await createInterviewRecord();
@@ -1304,51 +1337,162 @@ async function startSession() {
 
   if (!isSessionActive) return;
   $('endBtn').style.display = '';
-  ws = new WebSocket(`${WS_ENDPOINT}?access_token=${encodeURIComponent(token)}`);
-  ws.onopen = () => {
-    ws.send(JSON.stringify({
-      setup: {
-        model: `models/${MODEL_LIVE}`,
-        generationConfig: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Charon' } }
-          }
-        },
-        contextWindowCompression: {
-          slidingWindow: {}
-        },
-        realtimeInputConfig: {
-          automaticActivityDetection: { disabled: true }
-        },
-        inputAudioTranscription: {},
-        outputAudioTranscription: {},
-        systemInstruction: { parts: [{ text: buildSystemPrompt() }] }
-      }
-    }));
-    startMicCapture();
-  };
+  const generation = liveConnectionGeneration;
+  try {
+    const token = await fetchLiveToken();
+    if (!isSessionActive || generation !== liveConnectionGeneration) return;
+    await connectLiveApi(token, null, generation);
+    if (!isSessionActive || generation !== liveConnectionGeneration) return;
+    await startMicCapture();
+  } catch (error) {
+    if (!isSessionActive || generation !== liveConnectionGeneration) return;
+    showError(`Live APIに接続できませんでした: ${error.message}`);
+    cleanupSession('面談を開始できませんでした。');
+  }
+}
 
-  ws.onmessage = handleMessage;
-  ws.onerror = event => {
-    console.error('Live API WebSocket error:', event);
-    setStatus('Live APIの接続エラーを確認しています...', 'idle');
-  };
-  ws.onclose = event => {
-    if (!isSessionActive) return;
-    if (event.code !== 1000) {
+async function fetchLiveToken() {
+  // uses: 1 のトークンは接続ごとに発行する。再接続時に使い回さない。
+  const response = await fetch('/api/live-token', {
+    method: 'POST',
+    headers: { 'x-gemini-api-key': getApiKey() },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(15000)
+  });
+  const data = await response.json();
+  if (!response.ok || !data.token) {
+    throw new Error(data.error || 'Live APIトークンを取得できませんでした。');
+  }
+  return data.token;
+}
+
+function connectLiveApi(token, handle, generation) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`${WS_ENDPOINT}?access_token=${encodeURIComponent(token)}`);
+    ws = socket;
+    setupCompleted = false;
+    let ready = false;
+    const timeout = setTimeout(() => {
+      reject(new Error('Live APIへの接続がタイムアウトしました。'));
+      if (socket.readyState <= WebSocket.OPEN) socket.close(1000);
+    }, LIVE_CONNECTION_TIMEOUT_MS);
+    socket.onopen = () => {
+      if (!isSessionActive || socket !== ws || generation !== liveConnectionGeneration) {
+        socket.close(1000);
+        return;
+      }
+      socket.send(JSON.stringify({
+        setup: {
+          model: `models/${MODEL_LIVE}`,
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Charon' } }
+            }
+          },
+          contextWindowCompression: { slidingWindow: {} },
+          sessionResumption: handle ? { handle } : {},
+          realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
+          systemInstruction: { parts: [{ text: buildSystemPrompt() }] }
+        }
+      }));
+    };
+    socket.onmessage = async event => {
+      await handleMessage(event, socket);
+      if (socket === ws && setupCompleted && !ready) {
+        ready = true;
+        clearTimeout(timeout);
+        resolve();
+      }
+    };
+    socket.onerror = () => {
+      if (socket === ws && isSessionActive) {
+        setStatus('Live APIの接続を確認しています...', 'idle');
+      }
+    };
+    socket.onclose = event => {
+      clearTimeout(timeout);
+      if (!ready) reject(new Error(`Live API接続失敗 (code: ${event.code})`));
+      if (!isSessionActive || socket !== ws || generation !== liveConnectionGeneration
+        || liveReconnectInProgress || !ready) return;
+      // GoAwayが届かない切断も、再開可能な状態なら復旧する。
+      if (sessionResumptionHandle && !isAwaitingModel) {
+        reconnectLiveSession();
+        return;
+      }
       const detail = event.reason ? `: ${event.reason}` : '';
-      const phase = setupCompleted ? '' : '（初期化中）';
-      showError(`Live APIから切断されました${phase} (code: ${event.code}${detail})`);
+      showError(`Live APIから切断されました (code: ${event.code}${detail})`);
+      cleanupSession('接続が終了しました。もう一度面談を開始してください。');
+    };
+  });
+}
+
+async function reconnectLiveSession() {
+  if (!isSessionActive || liveReconnectInProgress || !sessionResumptionHandle) return;
+  const generation = liveConnectionGeneration;
+  const handle = sessionResumptionHandle;
+  const wasRecording = isAnswerRecording;
+  liveReconnectInProgress = true;
+  liveRotationRequested = false;
+  clearTimeout(liveGoAwayTimer);
+  liveGoAwayTimer = null;
+  isAnswerRecording = false;
+  setupCompleted = false;
+  setNextButton({ visible: true, disabled: true });
+  setStatus('接続を更新しています。少しお待ちください...', 'idle');
+  const previousSocket = ws;
+  ws = null;
+  if (previousSocket && previousSocket.readyState <= WebSocket.OPEN) previousSocket.close(1000);
+
+  for (let attempt = 0; attempt < MAX_LIVE_RECONNECT_ATTEMPTS; attempt++) {
+    try {
+      const token = await fetchLiveToken();
+      if (!isSessionActive || generation !== liveConnectionGeneration) return;
+      await connectLiveApi(token, handle, generation);
+      if (!isSessionActive || generation !== liveConnectionGeneration) return;
+      liveReconnectInProgress = false;
+      if (wasRecording || (!isPlayingAudio && !turnCompletePending)) {
+        beginAnswerRecording();
+        if (wasRecording) setStatus('接続を再開しました。途切れた部分から回答を続けてください 🎤', 'recording');
+      }
+      return;
+    } catch (_) {
+      if (!isSessionActive || generation !== liveConnectionGeneration) return;
+      const failedSocket = ws;
+      ws = null;
+      if (failedSocket && failedSocket.readyState <= WebSocket.OPEN) failedSocket.close(1000);
     }
-    cleanupSession('接続が終了しました。もう一度面談を開始してください。');
-  };
+  }
+  liveReconnectInProgress = false;
+  showError('接続を再開できませんでした。会話ログを保存して面談を終了します。');
+  cleanupSession('接続を再開できませんでした。もう一度面談を開始してください。');
+}
+
+function closeLiveConnection() {
+  liveConnectionGeneration++;
+  clearTimeout(liveGoAwayTimer);
+  liveGoAwayTimer = null;
+  liveReconnectInProgress = false;
+  liveRotationRequested = false;
+  sessionResumptionHandle = null;
+  setupCompleted = false;
+  const socket = ws;
+  ws = null;
+  if (socket && socket.readyState <= WebSocket.OPEN) socket.close(1000);
 }
 
 // ===== マイクキャプチャ =====
 async function startMicCapture() {
+  const generation = liveConnectionGeneration;
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    if (!isSessionActive || generation !== liveConnectionGeneration) {
+      stream.getTracks().forEach(track => track.stop());
+      return;
+    }
+    mediaStream = stream;
     if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
     if (audioContext.state === 'suspended') await audioContext.resume();
 
@@ -1365,7 +1509,7 @@ async function startMicCapture() {
     scriptProcessor.connect(audioContext.destination);
 
     scriptProcessor.onaudioprocess = event => {
-      if (!isAnswerRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
+      if (!isAnswerRecording || !setupCompleted || !ws || ws.readyState !== WebSocket.OPEN) return;
       const input = event.inputBuffer.getChannelData(0);
       const ratio = targetRate / sourceRate;
       const outputLength = Math.floor(input.length * ratio);
@@ -1451,8 +1595,7 @@ function endSession() {
   aiTextBuffer = '';
 
   stopMediaResources();
-  if (ws && ws.readyState === WebSocket.OPEN) ws.close(1000);
-  ws = null;
+  closeLiveConnection();
 
   document.querySelectorAll('.q-dot').forEach(dot => {
     dot.classList.remove('current');
@@ -1497,8 +1640,7 @@ function cleanupSession(statusMessage) {
   clearAudioQueue();
   stopTimer();
   stopMediaResources();
-  if (ws && ws.readyState === WebSocket.OPEN) ws.close(1000);
-  ws = null;
+  closeLiveConnection();
   showStoppedControls();
   setStatus(statusMessage, 'idle');
 }
@@ -1730,7 +1872,6 @@ export function initializeInterviewApp() {
     clearAudioQueue();
     stopTimer();
     stopMediaResources();
-    if (ws && ws.readyState <= WebSocket.OPEN) ws.close(1000);
-    ws = null;
+    closeLiveConnection();
   };
 }
