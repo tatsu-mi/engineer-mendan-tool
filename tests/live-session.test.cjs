@@ -52,12 +52,13 @@ function browser(fetchImpl) {
   element('apiKeyInput').value = 'test-key';
   run("isSessionActive = true; buildSystemPrompt = () => 'interview instructions';");
   const tick = () => new Promise(resolve => setImmediate(resolve));
-  const connect = async () => {
+  const connect = async (recordAnswer = true) => {
     const pending = run('connectLiveApi("initial-token", null, liveConnectionGeneration)');
     const socket = sockets.at(-1);
     socket.open();
     await socket.message({ setupComplete: {} });
     await pending;
+    if (recordAnswer) run('selfIntroductionRequested = true; beginAnswerRecording();');
     return socket;
   };
   return { element, run, sockets, requests, timers, intervals, tick, connect };
@@ -220,4 +221,53 @@ test('non-resumable state never falls back to an old checkpoint or silently star
   assert.equal(app.run('isSessionActive'), false);
   assert.equal(app.sockets.length, 1);
   assert.equal(app.requests.length, 0);
+});
+
+
+test('AI opens with the project explanation before recording the self introduction, and never repeats it on resume', async () => {
+  const app = browser();
+  const socket = await app.connect(false);
+  assert.equal(app.run('isAnswerRecording'), false);
+  assert.equal(socket.sent.length, 1, 'setup does not start candidate audio');
+  app.run('startInterviewOpening();');
+  const opening = socket.sent[1].clientContent;
+  assert.equal(opening.turnComplete, true);
+  assert.match(opening.turns[0].parts[0].text, /案件名・業務概要・必須スキル/);
+  assert.match(opening.turns[0].parts[0].text, /自己紹介をお願いします/);
+  assert.equal(app.run('isAwaitingModel'), true);
+  assert.equal(app.element('nextBtn').disabled, true);
+  app.run('startInterviewOpening();');
+  assert.equal(socket.sent.length, 2);
+  app.run(`addMessage = () => ({}); aiTextBuffer = '案件をご説明します。それでは、自己紹介をお願いします。';`);
+  await socket.message({ serverContent: { turnComplete: true } });
+  [...app.timers.values()].find(timer => timer.delay === 800).callback();
+  assert.equal(app.run('isAnswerRecording'), true);
+  assert.equal(app.run('questionCount'), 0);
+  await readyToResume(app, socket);
+  app.run('reconnectLiveSession();');
+  const resumed = await completeReconnect(app);
+  assert.equal(resumed.sent.some(message => message.clientContent), false);
+});
+
+test('self introduction always gets one project-related question before Q1 for every follow-up setting', () => {
+  for (const intensity of ['none', 'standard', 'deep']) {
+    const app = browser();
+    app.run(`selfIntroductionRequested = true; interviewQuestions = ['API設計を説明してください'];
+      interviewFollowUpIntensity = '${intensity}'; addMessage = () => ({});`);
+    const followUp = app.run('buildTurnInstruction()');
+    assert.match(followUp, /自己紹介で述べた経験・技術・担当範囲と今回の案件/);
+    assert.match(followUp, /主質問数に含めず/);
+    assert.match(followUp, /この発言では主質問へ進まない/);
+    app.run(`aiTextBuffer = 'Javaの開発をご担当されたのですね。今回の案件でどう生かせますか？';
+      turnCompletePending = true; finalizeCompletedTurn();`);
+    assert.equal(app.run('questionCount'), 0);
+    assert.equal(app.run('currentQuestionFollowUpCount'), 0);
+    const firstQuestion = app.run('buildTurnInstruction()');
+    assert.match(firstQuestion, /Q1です/);
+    assert.match(firstQuestion, /API設計を説明してください/);
+    app.run(`aiTextBuffer = '設計経験を生かせるのですね。Q1です。API設計を説明してください';
+      turnCompletePending = true; finalizeCompletedTurn();`);
+    assert.equal(app.run('questionCount'), 1);
+    assert.equal(app.run('currentQuestionFollowUpCount'), 0);
+  }
 });

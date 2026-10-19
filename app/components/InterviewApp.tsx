@@ -248,7 +248,7 @@ export default function InterviewApp({ userEmail }: InterviewAppProps) {
                 </div>
                 <div className="reverse-question-note">
                   <span className="note-rule" aria-hidden="true" />
-                  <div><strong>自己紹介と逆質問は主質問数に含みません</strong><p>最初に自己紹介を伺い、最後は「もう質問はありません」と伝えるまで逆質問を継続します。</p></div>
+                  <div><strong>自己紹介と逆質問は主質問数に含みません</strong><p>最初にAIが案件を説明し、自己紹介と案件に関連する質問を伺います。これらは主質問数に含みません。最後は「もう質問はありません」と伝えるまで逆質問を継続します。</p></div>
                 </div>
                 <div>
                   <label className="field-label" htmlFor="interviewCustomization">希望する雰囲気や話し方 <span className="field-label-note">任意</span></label>
@@ -295,6 +295,7 @@ export default function InterviewApp({ userEmail }: InterviewAppProps) {
                   <button className="btn btn-danger" id="endBtn" type="button" style={{ display: 'none' }}>面談を終了</button>
                 </div>
                 <p className="controls-hint">回答後に送信ボタンを押すと、次の質問へ進みます。</p>
+                <p className="controls-hint">すべての質問が終了しても面談が自動で終了しない場合は、「面談を終了」ボタンを押して手動で終了してください。</p>
               </section>
 
               <section className="transcript-panel">
@@ -305,7 +306,7 @@ export default function InterviewApp({ userEmail }: InterviewAppProps) {
                 <div className="transcript-box" id="transcriptBox">
                   <div className="placeholder" id="placeholder">
                     <span className="placeholder-mark" aria-hidden="true">“</span>
-                    面談を開始すると、ここに会話が表示されます。<br />接続後「よろしくお願いします」と話しかけてください。
+                    面談を開始すると、ここに会話が表示されます。<br />接続後、AIが案件を説明します。自己紹介を求められたらお話しください。
                   </div>
                 </div>
               </section>

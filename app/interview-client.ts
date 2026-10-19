@@ -68,6 +68,7 @@ let reverseQuestionActive = false;
 let sessionStarted = false;
 let selfIntroductionRequested = false;
 let selfIntroductionCompleted = false;
+let selfIntroductionFollowUpAsked = false;
 let setupCompleted = false;
 let skillSheetOriginalFileName = '';
 let currentInterviewId = null;
@@ -716,7 +717,7 @@ function beginAnswerRecording() {
   pendingCaptureAfterPlayback = false;
   setNextButton({ visible: true, disabled: false });
   setStatus(
-    sessionStarted ? '回答をお話しください 🎤' : '「よろしくお願いします」と話し、回答送信ボタンを押してください 🎤',
+    '回答をお話しください 🎤',
     'recording'
   );
 }
@@ -991,7 +992,7 @@ async function handleMessage(event, socket = ws) {
   if (data.setupComplete !== undefined) {
     setupCompleted = true;
     if (!timerInterval) startTimer();
-    if (!liveReconnectInProgress) beginAnswerRecording();
+    if (!liveReconnectInProgress && selfIntroductionRequested) beginAnswerRecording();
     return;
   }
 
@@ -1070,16 +1071,16 @@ function buildTurnInstruction() {
 候補者の直前の発言は逆質問です。最初の一文で質問の趣旨を自然に短く言い換えて確認してください。定型的な前置きは使わず、たとえば「参画後のチーム体制についてのご質問ですね」のように会話として自然につなげてください。質問があれば続けて簡潔かつ誠実に答え、最後に「他にはいかがですか？」と尋ねてください。質問がないことを明確に伝えた場合は、「ご質問は以上とのこと、承知しました」と自然に受け止め、続けて正確に「面談は以上です。本日はお時間をいただきありがとうございました。後ほど結果をご連絡いたします」と述べてください。`;
   }
 
-  if (!selfIntroductionRequested) {
-    selfIntroductionRequested = true;
+  if (!selfIntroductionFollowUpAsked && questionCount === 0) {
+    selfIntroductionFollowUpAsked = true;
     return `[進行制御]
-候補者が開始の挨拶をしたら、簡潔に挨拶を返したうえで「それでは最初に、自己紹介をお願いします。」と尋ねてください。自己紹介は主質問に含めず、Q番号を付けないでください。この発言では主質問へ進まないでください。`;
+候補者の自己紹介を要点に絞って最初の一文に自然かつ簡潔に要約して復唱してください。続けて、自己紹介で述べた経験・技術・担当範囲と今回の案件の業務内容・必須スキルを関連付けた質問を一つだけ尋ねてください。関連する経験が述べられていない場合は、自己紹介で述べた経験を今回の案件でどう生かせるかを尋ねてください。スキルシートだけに記載された経験を自己紹介で話したものとして扱わないでください。この質問は深掘り強度の設定にかかわらず必ず行い、主質問数に含めず、Q番号を付けないでください。この発言では主質問へ進まないでください。`;
   }
 
   if (questionCount === 0) {
     selfIntroductionCompleted = true;
     return `[進行制御]
-候補者の自己紹介を要点に絞って最初の一文に自然かつ簡潔に要約して復唱してください。自己紹介は主質問として数えず、復唱にはQ番号を付けないでください。続けて、確定済み主質問1を「Q1です。」に続けてそのまま尋ねてください。
+候補者の自己紹介に関連する質問への回答を要点に絞って最初の一文に自然かつ簡潔に要約して復唱してください。自己紹介とそれに関連する質問は主質問として数えず、復唱にはQ番号を付けないでください。続けて、確定済み主質問1を「Q1です。」に続けてそのまま尋ねてください。
 確定済み主質問1：${interviewQuestions[0]}`;
   }
 
@@ -1129,9 +1130,9 @@ function buildSystemPrompt() {
 - 必須スキル・技術要件：${requiredSkills}
 
 ## ターン進行（必ず守ること）
-候補者の発言は「回答送信」操作で区切られます。回答が確定するまで応答せず、回答確定ごとに1回だけ応答してください。
+候補者の発言は「回答送信」操作で区切られます。開始時の案件説明と自己紹介の依頼を除き、回答が確定するまで応答せず、回答確定ごとに1回だけ応答してください。
 
-開始時の挨拶を受けたら、最初に自己紹介を求めてください。自己紹介は主質問数に含めず、Q番号を付けないでください。自己紹介への回答を受けてから、その内容を要約して復唱し、主質問1へ進んでください。
+面談開始時は候補者の挨拶を待たず、担当者として簡潔に挨拶し、案件名・業務概要・必須スキルを説明してから「それでは、自己紹介をお願いします。」と尋ねてください。案件情報にない条件は補わないでください。自己紹介への回答を受けたら、その内容を要約して復唱し、今回の案件に関連する質問を一つしてください。その回答を受けてから主質問1へ進んでください。自己紹介とそれに関連する質問は主質問数に含めず、Q番号を付けないでください。
 
 開始時の挨拶を除き、候補者の自己紹介、回答、逆質問を受けたすべてのターンで、次の質問・説明・終了挨拶へ進む前に、候補者が述べた内容を要点に絞り、最初の一文で必ず自然に要約して復唱してください。長い回答をそのまま繰り返さず、「ご回答は、」のような定型的な前置きも使わず、要約を会話につながる文にしてください。この要約した復唱は会話ログの評価にも使われるため、単なる相づちにせず、回答に含まれる技術、経験、数値、担当範囲、判断理由などの重要な要点を正確に残してください。聞き取れない内容を推測したり、候補者が述べていない事実を補ったりしないでください。
 
@@ -1143,7 +1144,7 @@ function buildSystemPrompt() {
 - 逆質問への応答が指定された場合は、候補者の質問へ簡潔かつ誠実に答える
 
 ## 制約
-- 1回の発言は、回答の要約を含めて2〜3文程度にまとめる
+- 1回の発言は、回答の要約を含めて2〜3文程度にまとめる。ただし開始時は案件の説明と自己紹介の依頼を含めて3〜5文程度にまとめる
 - 1回の発言で複数の質問をしない
 - スキルシートに経験の記載がないスキルを扱う主質問は、確定済み主質問に含まれる最大1問だけとし、別の未経験スキルについて主質問を自律的に追加しない。その主質問への深掘りは設定された深掘り強度に従い、現在の学習、類似経験を生かした習得方法、参画後のキャッチアップ方法を確認する
 - 逆質問の開始と同じ発言内で終了の挨拶をしない
@@ -1292,6 +1293,7 @@ async function startSession() {
   sessionStarted = false;
   selfIntroductionRequested = false;
   selfIntroductionCompleted = false;
+  selfIntroductionFollowUpAsked = false;
   setupCompleted = false;
   isAnswerRecording = false;
   isAwaitingModel = false;
@@ -1303,7 +1305,7 @@ async function startSession() {
   clearPendingTurnFinalization();
   $('transcriptBox').innerHTML = `
     <div class="placeholder" id="placeholder">
-      接続後、「よろしくお願いします」と話して回答送信ボタンを押してください。
+      接続後、AI面接官が案件を説明します。自己紹介を求められたら話し、回答送信ボタンを押してください。
     </div>`;
   $('startBtn').style.display = 'none';
   $('endBtn').style.display = 'none';
@@ -1344,11 +1346,30 @@ async function startSession() {
     await connectLiveApi(token, null, generation);
     if (!isSessionActive || generation !== liveConnectionGeneration) return;
     await startMicCapture();
+    if (!isSessionActive || generation !== liveConnectionGeneration) return;
+    startInterviewOpening();
   } catch (error) {
     if (!isSessionActive || generation !== liveConnectionGeneration) return;
     showError(`Live APIに接続できませんでした: ${error.message}`);
     cleanupSession('面談を開始できませんでした。');
   }
+}
+
+function startInterviewOpening() {
+  if (!isSessionActive || !setupCompleted || selfIntroductionRequested
+    || !ws || ws.readyState !== WebSocket.OPEN) return;
+  selfIntroductionRequested = true;
+  sessionStarted = true;
+  isAwaitingModel = true;
+  setNextButton({ visible: true, disabled: true });
+  setStatus('AI面接官が案件を説明しています...', 'connected');
+  ws.send(JSON.stringify({
+    clientContent: {
+      turns: [{ role: 'user', parts: [{ text: `[進行制御]
+面談を開始してください。担当者として簡潔に挨拶し、設定された案件名・業務概要・必須スキルを3〜5文程度で分かりやすく説明した後、最後に「それでは、自己紹介をお願いします。」と尋ねてください。案件情報にない条件は補わないでください。Q番号を付けず、主質問や自己紹介に対する質問にはまだ進まないでください。` }] }],
+      turnComplete: true
+    }
+  }));
 }
 
 async function fetchLiveToken() {
@@ -1685,7 +1706,6 @@ async function generateReview() {
 
   const projectName = $('projectName').value.trim() || '（案件名未設定）';
   const requiredSkills = $('requiredSkills').value.trim() || '（必須スキル未設定）';
-  const skillSheet = $('skillSheet').value.trim() || '（スキルシート未設定）';
 
   try {
     await waitForPendingTranscriptCorrections();
@@ -1713,7 +1733,6 @@ async function generateReview() {
         interviewId: currentInterviewId,
         projectName,
         requiredSkills,
-        skillSheet,
         conversationLog
       })
     });

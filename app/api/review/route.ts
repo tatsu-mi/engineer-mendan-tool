@@ -75,12 +75,11 @@ export async function POST(request: Request) {
     return noStoreJson({ error: 'リクエストを読み取れませんでした。' }, { status: 400 });
   }
 
-  const { interviewId, projectName, requiredSkills, skillSheet, conversationLog } = input;
+  const { interviewId, projectName, requiredSkills, conversationLog } = input;
   if (
     typeof interviewId !== 'string'
     || typeof projectName !== 'string'
     || typeof requiredSkills !== 'string'
-    || typeof skillSheet !== 'string'
     || !isValidConversation(conversationLog)
   ) {
     return noStoreJson({ error: '総評生成に必要な面談情報が不足しています。' }, { status: 400 });
@@ -97,13 +96,13 @@ export async function POST(request: Request) {
 - 案件名：${projectName || '（案件名未設定）'}
 - 必須スキル：${requiredSkills || '（必須スキル未設定）'}
 
-## 候補者のスキルシート
-${skillSheet || '（スキルシート未設定）'}
-
 ## 会話ログ
 ${logText}
 
 ## 評価基準
+- 候補者の評価は会話内容だけを根拠とし、スキルシートの記載は加点・減点・経験や実績の補完に一切使わない
+- 案件情報は求めるスキルとの関連性を判断する基準としてのみ使い、候補者の経験・実績の根拠にしない
+- 面接官が質問内で紹介したスキルシートの情報は、候補者が会話で説明した事実として扱わない
 - technical、communication、attitude はそれぞれ200文字以内
 - feedback は300文字以内で、候補者が次回改善できる具体的な助言を含める
 - 候補者の経験・実績・スキルの判定は、候補者発言そのものより、その直後のAI面接官による要約した復唱を優先する
