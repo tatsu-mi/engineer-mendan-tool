@@ -5,9 +5,10 @@ import AppHeader from './AppHeader';
 
 type InterviewAppProps = {
   userEmail: string;
+  isAdministrator?: boolean;
 };
 
-export default function InterviewApp({ userEmail }: InterviewAppProps) {
+export default function InterviewApp({ userEmail, isAdministrator = false }: InterviewAppProps) {
   useEffect(() => {
     let active = true;
     let cleanup: (() => void) | undefined;
@@ -92,7 +93,7 @@ export default function InterviewApp({ userEmail }: InterviewAppProps) {
 
   return (
     <div className="app-frame">
-      <AppHeader userEmail={userEmail} homeHref="#top" />
+      <AppHeader userEmail={userEmail} homeHref="#top" isAdministrator={isAdministrator} />
 
       <div className="app-layout" id="top">
         <aside className="sidebar" aria-label="面談フロー">
@@ -121,6 +122,7 @@ export default function InterviewApp({ userEmail }: InterviewAppProps) {
               <strong>面談履歴</strong>
               <small>過去の設定・会話・総評</small>
             </a>
+            {isAdministrator && <a className="sidebar-menu-item" href="/analytics"><strong>利用状況の分析</strong><small>メンバー別の頻度・継続状況</small></a>}
           </nav>
           <div className="sidebar-note">
             <span className="sidebar-note-label">Before you start</span>

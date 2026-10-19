@@ -1,6 +1,7 @@
 import { auth } from '../auth';
 import InterviewApp from './components/InterviewApp';
 import LoginPage from './components/LoginPage';
+import { getActiveAdministrator } from '../lib/supabase-admin';
 
 export default async function Home() {
   const session = await auth();
@@ -8,5 +9,6 @@ export default async function Home() {
 
   if (!email) return <LoginPage />;
 
-  return <InterviewApp userEmail={email} />;
+  const administrator = await getActiveAdministrator(email);
+  return <InterviewApp userEmail={email} isAdministrator={Boolean(administrator)} />;
 }

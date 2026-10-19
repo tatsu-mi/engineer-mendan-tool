@@ -46,7 +46,7 @@ export default async function HistoryPage({ searchParams }: { searchParams: Sear
   const interviews = await getInterviewHistory(selectedMemberId);
 
   return (
-    <HistoryFrame userEmail={email}>
+    <HistoryFrame userEmail={email} isAdministrator={viewer.isAdministrator}>
       <div className="history-heading">
         <div>
           <p className="eyebrow">Interview history</p>

@@ -65,7 +65,7 @@ export default async function InterviewHistoryDetailPage({ params, searchParams 
     : interview.member_id;
 
   return (
-    <HistoryFrame userEmail={email}>
+    <HistoryFrame userEmail={email} isAdministrator={viewer.isAdministrator}>
       <a className="history-back" href={`/history${viewer.isAdministrator ? `?memberId=${backMemberId}` : ''}`}>← 面談履歴へ戻る</a>
       <div className="detail-heading">
         <div>
