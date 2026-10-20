@@ -5,6 +5,7 @@ import { aggregateUsage, getUsagePeriod, getUsageSort, sortUsage, usageSortColum
 import LoginPage from '../components/LoginPage';
 import AccessDeniedPage from '../components/AccessDeniedPage';
 import HistoryFrame from '../history/HistoryFrame';
+import AnalyticsFilters from './AnalyticsFilters';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,17 +56,15 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
         <div><p className="eyebrow">Usage analytics</p><h1>利用状況の分析</h1><p>メンバーの練習頻度と継続状況を確認できます。</p></div>
         <span className="history-status">管理者専用</span>
       </div>
-      <form className="analytics-filters" method="get">
-        <label>集計期間<select className="select-base" name="period" defaultValue={periodError ? 'custom' : period.preset}>
-          <option value="month">今月</option><option value="previous">先月</option><option value="30days">直近30日</option><option value="custom">任意期間</option>
-        </select></label>
-        <label>開始日（任意期間）<input className="input-base" type="date" name="start" defaultValue={typeof params.start === 'string' ? params.start : period.start} /></label>
-        <label>終了日（任意期間）<input className="input-base" type="date" name="end" defaultValue={typeof params.end === 'string' ? params.end : period.end} /></label>
-        <input type="hidden" name="sort" value={sort.column} />
-        <input type="hidden" name="direction" value={sort.direction} />
-        <label className="analytics-checkbox"><input type="checkbox" name="excludeAdmins" value="1" defaultChecked={excludeAdmins} />管理者を除外する</label>
-        <button className="btn btn-primary" type="submit">集計する</button>
-      </form>
+      <AnalyticsFilters
+        key={`${period.preset}:${period.start}:${period.end}:${periodError ?? ''}:${excludeAdmins}`}
+        preset={periodError ? 'custom' : period.preset}
+        start={typeof params.start === 'string' ? params.start : period.start}
+        end={typeof params.end === 'string' ? params.end : period.end}
+        sort={sort.column}
+        direction={sort.direction}
+        excludeAdmins={excludeAdmins}
+      />
       {periodError ? <p className="analytics-error" role="alert">{periodError}</p> : <>
         <p className="history-target">集計期間: {period.start} 〜 {period.end}（日本時間）{excludeAdmins ? ' ／ 管理者を除外中' : ' ／ 管理者を含む'}</p>
         <div className="analytics-summary">

@@ -8,7 +8,7 @@ const ts = require('typescript');
 function load(path, customRequire = require) {
   const exports = {};
   const code = ts.transpileModule(readFileSync(resolve(__dirname, '..', path), 'utf8'), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX }
   }).outputText;
   vm.runInNewContext(code, { exports, require: customRequire });
   return exports;
@@ -127,6 +127,7 @@ test('analytics page protects data and renders member filters and history links'
   }).outputText;
   vm.runInNewContext(code, { exports, Intl, URLSearchParams, require: name => {
     if (name === 'react/jsx-runtime') return require(name);
+    if (name === './AnalyticsFilters') return load('app/analytics/AnalyticsFilters.tsx');
     if (name === '../../auth') return { auth: async () => session };
     if (name === '../../lib/supabase-admin') return { ensureActiveMember: async () => ({ id: 'a' }) };
     if (name === '../../lib/usage-analytics') return analytics;

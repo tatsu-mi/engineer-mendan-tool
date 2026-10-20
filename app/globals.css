@@ -405,9 +405,9 @@ footer { margin: clamp(120px, calc(100vh - 560px), 420px) 0 0 46px; padding-top:
 /* 管理者向け利用分析 */
 .header-analytics { color: var(--brand); font-size: 12px; font-weight: 650; text-decoration: none; white-space: nowrap; }
 .header-analytics:hover { text-decoration: underline; }
-.analytics-filters { margin-top: 24px; padding: 20px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 16px; background: var(--surface); border: 1px solid var(--line); }
+.analytics-filters { margin-top: 24px; padding: 20px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: 16px; background: var(--surface); border: 1px solid var(--line); }
 .analytics-filters label { display: flex; flex-direction: column; gap: 8px; color: var(--ink-2); font-size: 11px; font-weight: 650; }
-.analytics-filters .analytics-checkbox { flex-direction: row; align-items: center; min-height: 40px; }
+.analytics-filters .analytics-checkbox { grid-column: span 2; flex-direction: row; align-items: center; min-height: 40px; }
 .analytics-checkbox input { width: 16px; height: 16px; accent-color: var(--brand); }
 .analytics-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 24px; }
 .analytics-summary > div { display: flex; flex-direction: column; gap: 16px; padding: 20px 16px; background: var(--surface); border-top: 2px solid var(--brand); }
@@ -432,6 +432,7 @@ footer { margin: clamp(120px, calc(100vh - 560px), 420px) 0 0 46px; padding-top:
 @media (max-width: 1050px) { .analytics-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 460px) {
   .analytics-filters { grid-template-columns: 1fr; }
+  .analytics-filters .analytics-checkbox { grid-column: auto; }
   .header-account { gap: 8px; }
   .header-analytics { font-size: 10px; }
   .analytics-summary > div { padding: 16px 12px; }
