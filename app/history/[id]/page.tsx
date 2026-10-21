@@ -1,3 +1,4 @@
+import { isMediaFeedback } from '../../../lib/media-review';
 import { notFound } from 'next/navigation';
 import { auth } from '../../../auth';
 import { ensureActiveMember } from '../../../lib/supabase-admin';
@@ -56,6 +57,7 @@ export default async function InterviewHistoryDetailPage({ params, searchParams 
   const configuration = one(interview.interview_configurations);
   const skillSheet = one(interview.interview_skill_sheets);
   const review = one(interview.interview_reviews);
+  const mediaFeedback = isMediaFeedback(review?.media_feedback) ? review.media_feedback : null;
   const interviewMember = one(interview.members);
   const questions = [...(interview.interview_questions ?? [])].sort((a, b) => a.sequence_number - b.sequence_number);
   const logs = [...(interview.conversation_logs ?? [])].sort((a, b) => a.sequence_number - b.sequence_number);
@@ -139,6 +141,11 @@ export default async function InterviewHistoryDetailPage({ params, searchParams 
               <div><h3>技術力</h3><p>{review.technical}</p></div>
               <div><h3>コミュニケーション</h3><p>{review.communication}</p></div>
               <div><h3>姿勢・意欲</h3><p>{review.attitude}</p></div>
+              {mediaFeedback && <>
+                <div><h3>身振り・表情</h3><p>{mediaFeedback.visual}</p></div>
+                <div><h3>声のトーン・話し方</h3><p>{mediaFeedback.vocal}</p></div>
+                <div className="detail-feedback"><h3>解析対象</h3><p>{mediaFeedback.coverage}</p></div>
+              </>}
               <div className="detail-feedback"><h3>改善アドバイス</h3><p>{review.feedback}</p></div>
             </div>
           </div>

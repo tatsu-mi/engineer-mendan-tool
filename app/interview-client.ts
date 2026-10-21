@@ -95,6 +95,16 @@ let localRecording = null;
 let localRecordingGeneration = 0;
 let recordingDownloads = new Set();
 let recordingPageActive = false;
+let mediaReviewInterviewId = null;
+let mediaReviewEnabled = false;
+let mediaReviewSamples = [];
+let mediaReviewCapture = null;
+let mediaReviewPending = new Set();
+let mediaReviewCaptureError = false;
+let mediaReviewResult = null;
+const MAX_MEDIA_REVIEW_SAMPLES = 8;
+const MAX_MEDIA_REVIEW_BYTES = 1500000;
+
 
 // ===== UI =====
 const $ = id => document.getElementById(id);
@@ -830,6 +840,7 @@ function beginAnswerRecording() {
   }
   ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
   isAnswerRecording = true;
+  startMediaReviewSample();
   pendingCaptureAfterPlayback = false;
   setNextButton({ visible: true, disabled: false });
   setStatus(
@@ -845,6 +856,7 @@ function submitAnswer() {
     return;
   }
 
+  stopMediaReviewSample();
   isAnswerRecording = false;
   isAwaitingModel = true;
   setNextButton({ visible: true, disabled: true });
@@ -1614,6 +1626,7 @@ async function reconnectLiveSession() {
   if (!isSessionActive || liveReconnectInProgress || !sessionResumptionHandle) return;
   const generation = liveConnectionGeneration;
   const handle = sessionResumptionHandle;
+  stopMediaReviewSample();
   const wasRecording = isAnswerRecording;
   liveReconnectInProgress = true;
   liveRotationRequested = false;
@@ -1670,6 +1683,102 @@ function updateRecordingQualityControl() {
   const video = $('recordingMode')?.value === 'video';
   if ($('recordingQualityField')) $('recordingQualityField').hidden = !video;
   if ($('recordingQuality')) $('recordingQuality').disabled = !video || $('recordingMode').disabled;
+  if ($('mediaReviewEnabled')) $('mediaReviewEnabled').disabled = $('recordingMode').disabled || $('recordingMode').value === 'off';
+}
+
+// 評価専用。AI音声・ダウンロード用の音量補正を含めず、回答冒頭の最大12秒を記録する。
+function startMediaReviewSample() {
+  if (!mediaReviewEnabled || !recordingPageActive || !localRecording?.recorder
+    || localRecording.recorder.state !== 'recording' || !isAnswerRecording || mediaReviewCapture
+    || mediaReviewSamples.length >= MAX_MEDIA_REVIEW_SAMPLES
+    || mediaReviewSamples.reduce((n, sample) => n + sample.blob.size, 0) >= MAX_MEDIA_REVIEW_BYTES) return;
+  const videoTracks = localRecording.camera?.getVideoTracks() || [];
+  const video = videoTracks.length > 0;
+  const mimeType = (video ? ['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
+    : ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']).find(type => MediaRecorder.isTypeSupported(type));
+  const interviewId = currentInterviewId;
+  try {
+    const recorder = new MediaRecorder(new MediaStream([
+      ...mediaStream.getAudioTracks(), ...videoTracks
+    ]), { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 48000,
+      ...(video ? { videoBitsPerSecond: 120000 } : {}) });
+    const capture = { recorder, chunks: [], timer: null, startedAt: elapsedSeconds,
+      startedMs: performance.now(), failed: false };
+    let resolveStopped;
+    const stopped = new Promise(resolve => { resolveStopped = resolve; });
+    const finish = () => {
+      clearTimeout(capture.timer);
+      if (mediaReviewCapture === capture) mediaReviewCapture = null;
+      if (!capture.failed && recordingPageActive && mediaReviewInterviewId === interviewId) {
+        const blob = new Blob(capture.chunks, { type: recorder.mimeType || mimeType });
+        const duration = Math.min(12, (performance.now() - capture.startedMs) / 1000);
+        const bytes = mediaReviewSamples.reduce((n, sample) => n + sample.blob.size, 0);
+        if (duration >= 1 && blob.size > 0 && bytes + blob.size <= MAX_MEDIA_REVIEW_BYTES
+          && mediaReviewSamples.length < MAX_MEDIA_REVIEW_SAMPLES) {
+          mediaReviewSamples.push({ blob, startSeconds: capture.startedAt, durationSeconds: duration });
+        } else if (blob.size > 0) mediaReviewCaptureError = true;
+      }
+      capture.chunks = [];
+      mediaReviewPending.delete(stopped);
+      resolveStopped();
+    };
+    recorder.ondataavailable = event => { if (event.data.size > 0) capture.chunks.push(event.data); };
+    recorder.onstop = finish;
+    recorder.onerror = () => {
+      capture.failed = true;
+      if (mediaReviewInterviewId === interviewId) mediaReviewCaptureError = true;
+      if (mediaReviewCapture === capture) stopMediaReviewSample();
+    };
+    mediaReviewCapture = capture;
+    recorder.start();
+    mediaReviewPending.add(stopped);
+    capture.timer = setTimeout(stopMediaReviewSample, 12000);
+  } catch (_) {
+    mediaReviewCaptureError = true;
+    mediaReviewCapture = null;
+  }
+}
+
+function stopMediaReviewSample() {
+  const capture = mediaReviewCapture;
+  if (!capture) return;
+  clearTimeout(capture.timer);
+  mediaReviewCapture = null;
+  if (capture.recorder.state !== 'inactive') capture.recorder.stop();
+}
+
+async function generateMediaFeedback() {
+  if (mediaReviewInterviewId !== currentInterviewId || !mediaReviewEnabled) return null;
+  if (mediaReviewResult) return mediaReviewResult;
+  // MediaRecorderの最後のdataavailable/onstopを待ってから送信する。
+  await Promise.race([Promise.all([...mediaReviewPending]), new Promise(resolve => setTimeout(resolve, 3000))]);
+  const fallback = reason => ({ visual: '解析できませんでした。', vocal: '解析できませんでした。',
+    coverage: `${reason} 会話ログによる総評は通常どおり生成しました。` });
+  if (!mediaReviewSamples.length) return fallback('評価用の録音・録画を取得できませんでした。');
+  $('reviewContent').innerHTML = '<div class="review-generating"><div class="review-spinner"></div>録音・録画から話し方・振る舞いを解析しています...</div>';
+  try {
+    const samples = await Promise.all(mediaReviewSamples.map(async sample => {
+      const bytes = new Uint8Array(await sample.blob.arrayBuffer());
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      return { mimeType: sample.blob.type.split(';')[0], data: btoa(binary),
+        startSeconds: sample.startSeconds, durationSeconds: sample.durationSeconds };
+    }));
+    const response = await fetch('/api/media-review', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-gemini-api-key': getApiKey() },
+      signal: AbortSignal.timeout(55000),
+      body: JSON.stringify({ interviewId: currentInterviewId, samples })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '解析に失敗しました。');
+    if (!data.mediaFeedback || !['visual', 'vocal', 'coverage'].every(key =>
+      typeof data.mediaFeedback[key] === 'string' && data.mediaFeedback[key].trim())) throw new Error('解析結果が不正です。');
+    mediaReviewResult = data.mediaFeedback;
+    if (mediaReviewCaptureError) mediaReviewResult.coverage += ' 一部の区間は取得できず、解析対象から除外しました。';
+    return mediaReviewResult;
+  } catch (_) {
+    return fallback('録音・録画の解析に失敗しました。');
+  }
 }
 
 function createRecordingAudioChannel(initialGain, maxGain, compressor) {
@@ -1698,6 +1807,13 @@ function balanceRecordingAudio(recording) {
 
 async function startLocalRecording() {
   const mode = $('recordingMode')?.value;
+  if (mediaReviewInterviewId !== currentInterviewId) {
+    mediaReviewInterviewId = currentInterviewId;
+    mediaReviewSamples = [];
+    mediaReviewResult = null;
+    mediaReviewCaptureError = false;
+  }
+  mediaReviewEnabled = mode !== 'off' && Boolean($('mediaReviewEnabled')?.checked);
   if (!isSessionActive || !mode || mode === 'off') return;
   const qualityName = $('recordingQuality')?.value;
   const quality = RECORDING_VIDEO_QUALITIES[
@@ -1801,6 +1917,7 @@ async function startLocalRecording() {
         : '記録を終了しました。ページを閉じる前にダウンロードしてください。';
     };
     recorder.start(1000);
+    if (isAnswerRecording) startMediaReviewSample();
     recording.balanceTimer = setInterval(() => balanceRecordingAudio(recording), 100);
     if (recording.camera) {
       const preview = $('recordingPreview');
@@ -1842,6 +1959,7 @@ function releaseLocalRecording(recording) {
 }
 
 function stopLocalRecording() {
+  stopMediaReviewSample();
   localRecordingGeneration++;
   const recording = localRecording;
   if (!recording) return;
@@ -2223,6 +2341,7 @@ function endSession() {
 }
 
 function stopMediaResources() {
+  stopMediaReviewSample();
   stopLocalRecording();
   if (scriptProcessor) {
     scriptProcessor.disconnect();
@@ -2317,6 +2436,7 @@ async function generateReview() {
       </div>`;
     setStatus('面談終了。会話ログを保存しています...', 'idle');
     await persistConversationLogs();
+    const mediaFeedback = await generateMediaFeedback();
     $('reviewContent').innerHTML = `
       <div class="review-generating">
         <div class="review-spinner"></div>
@@ -2334,7 +2454,8 @@ async function generateReview() {
         interviewId: currentInterviewId,
         projectName,
         requiredSkills,
-        conversationLog
+        conversationLog,
+        ...(mediaFeedback ? { mediaFeedback } : {})
       })
     });
 
@@ -2417,6 +2538,17 @@ function renderReview(review) {
       </div>
 
       <div class="review-sections">
+        ${review.media_feedback ? `
+          <div class="review-section">
+            <div class="review-section-header">身振り・表情</div>
+            <div class="review-section-body">${escapeHtml(review.media_feedback.visual)}</div>
+          </div>
+          <div class="review-section">
+            <div class="review-section-header">声のトーン・話し方</div>
+            <div class="review-section-body">${escapeHtml(review.media_feedback.vocal)}</div>
+          </div>
+          <p class="controls-hint review-media-coverage">${escapeHtml(review.media_feedback.coverage)}</p>
+        ` : ''}
         <div class="review-section">
           <div class="review-section-header">
             <span class="review-section-icon">01</span>技術力・経験の適合性
@@ -2492,6 +2624,10 @@ export function initializeInterviewApp() {
     $('recordingMode').removeEventListener('change', updateRecordingQualityControl);
     recordingDownloads.forEach(url => URL.revokeObjectURL(url));
     recordingDownloads.clear();
+    mediaReviewSamples = [];
+    mediaReviewInterviewId = null;
+    mediaReviewEnabled = false;
+    mediaReviewResult = null;
     mounted = false;
     cleanupDropZone();
     skillSheetFile.removeEventListener('change', importSkillSheet);

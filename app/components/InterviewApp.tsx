@@ -306,7 +306,11 @@ export default function InterviewApp({ userEmail, isAdministrator = false }: Int
                       <option value="high">高</option>
                     </select>
                   </div>
-                  <p className="controls-hint" id="recordingHint">面談開始・再開時に記録を開始します。自分とAIの音声は音量差を抑えて収録します。録画データはDB・サーバーに保存されません。終了・中断後、ページを閉じる前にダウンロードしてください。長時間の記録は端末のメモリを使用します。</p>
+                  <p className="controls-hint" id="recordingHint">面談開始・再開時に記録を開始します。自分とAIの音声は音量差を抑えて収録します。記録ファイルはDB・サーバーに保存されません。終了・中断後、ページを閉じる前にダウンロードしてください。長時間の記録は端末のメモリを使用します。</p>
+                  <label className="field-label" htmlFor="mediaReviewEnabled">
+                    <input type="checkbox" id="mediaReviewEnabled" disabled aria-describedby="mediaReviewHint" /> 録音・録画から話し方・振る舞いを評価する
+                  </label>
+                  <p className="controls-hint" id="mediaReviewHint">話し方や身振り・表情の改善点を総評に追加します。</p>
                   <p className="controls-hint" id="recordingStatus" role="status" aria-live="polite" />
                   <video className="recording-preview" id="recordingPreview" autoPlay muted playsInline hidden aria-label="録画中のカメラ映像" />
                   <ul className="recording-downloads" id="recordingDownloads" aria-label="録音・録画のダウンロード" />

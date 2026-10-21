@@ -59,8 +59,14 @@ function browser(mode = 'audio', getUserMedia) {
     }
   }
   const blobs = [];
+  const timeouts = new Map();
+  let now = 0;
   const context = vm.createContext({
-    exports: {}, console, Blob, MediaRecorder, MediaStream,
+    exports: {}, console, Blob, MediaRecorder, MediaStream, AbortSignal,
+    btoa: value => Buffer.from(value, 'binary').toString('base64'),
+    performance: { now: () => now },
+    setTimeout(callback) { timeouts.set(++nextInterval, callback); return nextInterval; },
+    clearTimeout(id) { timeouts.delete(id); },
     setInterval(callback) { intervals.set(++nextInterval, callback); return nextInterval; },
     clearInterval(id) { intervals.delete(id); },
     navigator: { mediaDevices: { getUserMedia: getUserMedia || (async () => new MediaStream([camera])) } },
@@ -89,7 +95,7 @@ function browser(mode = 'audio', getUserMedia) {
   const run = code => vm.runInContext(code, context);
   run('recordingPageActive = true; isSessionActive = true; mediaStream = testMicStream; audioContext = testAudioContext; outputAnalyser = testOutput;');
   return { run, element, recorders, blobs, connections, disconnections, mic, camera, destination,
-    analysers, gains, intervals, compressor };
+    analysers, gains, intervals, compressor, timeouts, advance(ms) { now += ms; } };
 }
 
 test('mixes microphone and AI audio locally and includes the final chunk after stop', async () => {
@@ -252,4 +258,58 @@ test('unmount discards pending recording data and off mode never starts recordin
   app.run('recordingPageActive = false; stopLocalRecording()');
   app.recorders[0].finish();
   assert.equal(app.blobs.length, 0);
+});
+
+
+test('opt-in review samples use original microphone and camera, exclude AI mix, and await final recorder data', async () => {
+  const app = browser('video');
+  app.element('mediaReviewEnabled').checked = true;
+  app.run("currentInterviewId = 'interview-1'; elapsedSeconds = 65; isAnswerRecording = true;");
+  await app.run('startLocalRecording()');
+  assert.equal(app.recorders.length, 2);
+  const reviewRecorder = app.recorders[1];
+  assert.equal(reviewRecorder.stream.getAudioTracks()[0], app.mic);
+  assert.equal(reviewRecorder.stream.getVideoTracks()[0], app.camera);
+  assert.notEqual(reviewRecorder.stream.getAudioTracks()[0], app.destination.stream.getAudioTracks()[0]);
+  app.advance(5000);
+  app.run('stopMediaReviewSample()');
+  assert.equal(app.run('mediaReviewSamples.length'), 0);
+  assert.equal(app.run('mediaReviewPending.size'), 1);
+  reviewRecorder.finish();
+  assert.equal(app.run('mediaReviewPending.size'), 0);
+  assert.equal(app.run('mediaReviewSamples.length'), 1);
+  assert.equal(app.run('mediaReviewSamples[0].startSeconds'), 65);
+  assert.equal(app.run('mediaReviewSamples[0].durationSeconds'), 5);
+  assert.equal(app.mic.stopped, false, 'stopping sample must preserve the interview microphone');
+  assert.equal(app.camera.stopped, false, 'stopping sample must preserve the download camera');
+});
+
+test('disabled review makes no extra recorder; sample capture is bounded and does not leak to another interview', async () => {
+  const app = browser();
+  app.run("currentInterviewId = 'old'; isAnswerRecording = true;");
+  await app.run('startLocalRecording()');
+  assert.equal(app.recorders.length, 1);
+  app.run('mediaReviewEnabled = true; mediaReviewSamples = Array(8).fill({ blob: new Blob(["a"]) }); startMediaReviewSample();');
+  assert.equal(app.recorders.length, 1);
+  app.run('mediaReviewSamples = []; startMediaReviewSample();');
+  app.advance(2000);
+  app.run('stopMediaReviewSample(); stopLocalRecording();');
+  app.run("currentInterviewId = 'new';");
+  await app.run('startLocalRecording()');
+  app.recorders[1].finish();
+  assert.equal(app.run('mediaReviewSamples.length'), 0, 'late stop event belongs to the old interview');
+});
+
+test('media parsing failure produces a feedback fallback rather than rejecting the conversation review', async () => {
+  const app = browser();
+  app.element('mediaReviewEnabled').checked = true;
+  app.run("currentInterviewId = 'interview-1'; isAnswerRecording = true;");
+  await app.run('startLocalRecording()');
+  app.advance(2000);
+  app.run('stopMediaReviewSample()');
+  app.recorders[1].finish();
+  app.run("getApiKey = () => 'key'; fetch = async () => { throw new Error('network unavailable'); };");
+  const feedback = await app.run('generateMediaFeedback()');
+  assert.match(feedback.coverage, /解析に失敗/);
+  assert.match(feedback.coverage, /会話ログによる総評は通常どおり/);
 });

@@ -1,3 +1,4 @@
+import { isMediaFeedback } from '../../../lib/media-review';
 import {
   GEMINI_API_BASE,
   TEXT_MODEL,
@@ -76,7 +77,10 @@ export async function POST(request: Request) {
     return noStoreJson({ error: 'リクエストを読み取れませんでした。' }, { status: 400 });
   }
 
-  const { interviewId, projectName, requiredSkills, conversationLog } = input;
+  const { interviewId, projectName, requiredSkills, conversationLog, mediaFeedback } = input;
+  if (mediaFeedback !== undefined && !isMediaFeedback(mediaFeedback)) {
+    return noStoreJson({ error: '録音・録画の評価結果が不正です。' }, { status: 400 });
+  }
   if (
     typeof interviewId !== 'string'
     || typeof projectName !== 'string'
@@ -141,6 +145,10 @@ ${logText}
     const review = JSON.parse(rawText);
     if (!isValidReview(review)) throw new Error('総評に必要な項目が不足しています。');
 
+    // 映像・音声の助言は会話に基づく採点と独立させ、採点プロンプトに混ぜない。
+    if (mediaFeedback) review.media_feedback = {
+      visual: mediaFeedback.visual, vocal: mediaFeedback.vocal, coverage: mediaFeedback.coverage
+    };
     const { error } = await getSupabaseAdmin().rpc('save_interview_review', {
       p_member_id: authentication.memberId,
       p_interview_id: interviewId,
