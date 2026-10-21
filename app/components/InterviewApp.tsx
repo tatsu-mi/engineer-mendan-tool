@@ -207,9 +207,9 @@ export default function InterviewApp({ userEmail, isAdministrator = false }: Int
                 <div><p className="panel-kicker">Candidate</p><h3>技術者スキルシート</h3></div>
               </div>
               <div className="panel-content form-stack">
-                <div className="file-import">
+                <div className="file-import" id="skillSheetDropZone" role="group" aria-label="スキルシートPDFの取り込み">
                   <input type="file" id="skillSheetFile" accept=".pdf,application/pdf" hidden />
-                  <div className="file-import-copy"><strong>PDFから内容を取り込む</strong><span>表やスキャン画像も解析できます（最大4MB）</span></div>
+                  <div className="file-import-copy"><strong>PDFをここにドラッグ＆ドロップ</strong><span>ボタンからも選択できます。表やスキャン画像も解析できます（最大4MB）</span></div>
                   <label className="btn btn-secondary file-import-label" id="skillSheetFileLabel" htmlFor="skillSheetFile">PDFを選択</label>
                   <div className="file-import-status" id="skillSheetImportStatus" aria-live="polite">取り込み後に内容を確認・編集できます。</div>
                 </div>
@@ -293,6 +293,7 @@ export default function InterviewApp({ userEmail, isAdministrator = false }: Int
                 </div>
                 <div className="controls-row">
                   <button className="btn btn-primary" id="startBtn" type="button">面談を開始</button>
+                  <button className="btn btn-primary" id="resumeBtn" type="button" style={{ display: 'none' }}>途中から再開</button>
                   <button className="btn btn-primary" id="nextBtn" type="button" style={{ display: 'none' }} disabled>回答を送信して次へ</button>
                   <button className="btn btn-danger" id="endBtn" type="button" style={{ display: 'none' }}>面談を終了</button>
                 </div>

@@ -47,7 +47,7 @@ export async function getInterviewDetail(interviewId: string, allowedMemberId?: 
       interview_skill_sheets(content,original_file_name),
       interview_questions(sequence_number,main_question_number,question_type,question_text),
       conversation_logs(sequence_number,speaker_role,text,spoken_at),
-      interview_reviews(overall,technical_score,communication_score,overall_score,technical,communication,attitude,feedback)
+      interview_reviews(overall,technical_score,communication_score,attitude_score,overall_score,technical,communication,attitude,feedback)
     `)
     .eq('id', interviewId);
 

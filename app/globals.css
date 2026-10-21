@@ -156,6 +156,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
   padding: 17px 18px; background: var(--surface-soft); border: 1px dashed var(--line-strong); border-radius: 5px;
 }
 .file-import-copy { display: flex; flex-direction: column; gap: 4px; }
+.file-import.is-dragging { border-color: var(--brand); background: var(--brand-soft); outline: 2px solid var(--brand); outline-offset: 2px; }
 .file-import-copy strong { font-size: 12px; font-weight: 650; }
 .file-import-copy span, .file-import-status { color: var(--ink-3); font-size: 10px; line-height: 1.5; }
 .file-import-status { grid-column: 1 / -1; }
@@ -259,6 +260,10 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .overall-badge .badge-label { color: rgba(255,255,255,.65); font-size: 9px; }
 .overall-badge .badge-mark { color: #fff; font: 500 42px/1 Georgia, serif; }
 .overall-badge .badge-sub { color: rgba(255,255,255,.72); font-size: 9px; }
+.badge-score { align-self: stretch; margin-top: 7px; padding-top: 9px; display: flex; flex-direction: column; align-items: center; gap: 5px; color: #fff; border-top: 1px solid rgba(255,255,255,.25); }
+.badge-score > span { font-size: 9px; }
+.badge-score strong { font-size: 20px; }
+.badge-score small { font-size: 10px; font-weight: 400; }
 .score-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; }
 .score-card { padding: 15px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 7px; background: var(--surface-soft); border: 1px solid var(--line); }
 .score-card .sc-label { color: var(--ink-3); font-size: 10px; }
@@ -311,6 +316,8 @@ footer { margin: clamp(120px, calc(100vh - 560px), 420px) 0 0 46px; padding-top:
 .detail-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 28px; padding-bottom: 26px; border-bottom: 1px solid var(--line-strong); }
 .detail-meta { margin-top: 13px; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; color: var(--ink-3); font-size: 10px; }
 .detail-member { margin-top: 10px; color: var(--ink-2); font-size: 11px; }
+.detail-resume { margin-top: 20px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.detail-resume p { color: var(--ink-2); font-size: 12px; }
 .detail-overall { width: 112px; min-height: 112px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff; background: var(--brand); }
 .detail-overall span, .detail-overall small { color: rgba(255,255,255,.7); font-size: 9px; }
 .detail-overall strong { margin: 5px 0; font: 500 36px/1 Georgia, serif; }

@@ -50,8 +50,10 @@ Entra管理センターの「アプリの登録」で、このアプリ用のシ
 ## Supabase
 
 1. Supabaseプロジェクトを作成する
-2. [マイグレーション](./supabase/migrations/20260828000000_create_interview_schema.sql)をSQL Editorで実行する（Supabase CLIを利用する場合は `supabase db push`）
-3. 既存データベースには追加マイグレーションも適用する
+2. [マイグレーション](./supabase/migrations/)をファイル名順にSQL Editorで実行する（Supabase CLIを利用する場合は `supabase db push`）。既存環境にも `20261021000000_add_attitude_score.sql` を適用してください。過去の総評の姿勢・意欲は「未採点」と表示します。
+3. 途中再開には `20261021010000_resume_interviews.sql` も適用する
+
+接続が途切れた場合は、面談画面または本人の履歴詳細にある「途中から再開」を使用できます。APIキーは再入力が必要です。会話と進捗はターン確定・回答送信時と15秒ごとに保存します。送信済み回答への応答が途切れた場合は、その応答を再生成します。保存前の音声そのものは復元できません。導入前の中断履歴では、会話ログから進捗を復元します。
 
 ログインユーザーは `members` に自動登録されます。`administrator_accounts` にはアプリケーションから一切追加しません。管理者を登録する場合だけ、運用担当者がSQL Editorで次を手動実行します。
 

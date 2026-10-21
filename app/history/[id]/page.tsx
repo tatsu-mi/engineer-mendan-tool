@@ -36,8 +36,8 @@ function formatDuration(seconds: number | null) {
   return `${Math.floor(seconds / 60)}分${String(seconds % 60).padStart(2, '0')}秒`;
 }
 
-function Score({ label, value }: { label: string; value: number }) {
-  return <div className="detail-score"><span>{label}</span><strong>{value}<small> / 5</small></strong></div>;
+function Score({ label, value }: { label: string; value: number | null }) {
+  return <div className="detail-score"><span>{label}</span><strong>{value == null ? '未採点' : <>{value}<small> / 5</small></>}</strong></div>;
 }
 
 export default async function InterviewHistoryDetailPage({ params, searchParams }: PageProps) {
@@ -78,8 +78,15 @@ export default async function InterviewHistoryDetailPage({ params, searchParams 
           </div>
           {viewer.isAdministrator && interviewMember && <p className="detail-member">対象: {interviewMember.display_name || interviewMember.email}</p>}
         </div>
-        {review && <div className="detail-overall"><span>総合評価</span><strong>{review.overall}</strong><small>{review.overall_score} / 5</small></div>}
+        {review && <div className="detail-overall"><span>総合評価</span><strong>{review.overall}</strong><small>総合スコア {review.overall_score} / 5</small></div>}
       </div>
+
+      {interview.member_id === member.id && interview.status !== 'completed' && (
+        <div className="detail-resume">
+          <p>保存された会話ログと進捗を引き継いで再開できます。再開画面でAPIキーを入力してください。</p>
+          <a className="btn btn-primary" href={`/?resume=${encodeURIComponent(interview.id)}#interview`}>途中から再開</a>
+        </div>
+      )}
 
       <section className="detail-section">
         <div className="detail-section-heading"><p className="panel-kicker">Settings</p><h2>面談時の設定</h2></div>
@@ -126,12 +133,12 @@ export default async function InterviewHistoryDetailPage({ params, searchParams 
             <div className="detail-scores">
               <Score label="技術力" value={review.technical_score} />
               <Score label="コミュニケーション" value={review.communication_score} />
-              <Score label="総合" value={review.overall_score} />
+              <Score label="姿勢・意欲" value={review.attitude_score} />
             </div>
             <div className="detail-review-grid">
               <div><h3>技術力</h3><p>{review.technical}</p></div>
               <div><h3>コミュニケーション</h3><p>{review.communication}</p></div>
-              <div><h3>姿勢・印象</h3><p>{review.attitude}</p></div>
+              <div><h3>姿勢・意欲</h3><p>{review.attitude}</p></div>
               <div className="detail-feedback"><h3>改善アドバイス</h3><p>{review.feedback}</p></div>
             </div>
           </div>

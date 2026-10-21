@@ -13,11 +13,13 @@ const MAX_INTERVIEW_CUSTOMIZATION_CHARS = 1000;
 const TRANSCRIPTION_SETTLE_MS = 800;
 const TRANSCRIPT_CORRECTION_TIMEOUT_MS = 25 * 1000;
 const MAX_CORRECTION_DOMAIN_CONTEXT_CHARS = 20000;
+const MAX_CORRECTION_TURN_CONTEXT_CHARS = 4000;
 const OUTPUT_AUDIO_SAMPLE_RATE = 24000;
 const AUDIO_INITIAL_BUFFER_SECONDS = 0.18;
 const AUDIO_DIAGNOSTIC_INTERVAL_CHUNKS = 20;
 const LIVE_CONNECTION_TIMEOUT_MS = 20000;
 const MAX_LIVE_RECONNECT_ATTEMPTS = 3;
+const MODEL_RESPONSE_TIMEOUT_MS = 45000;
 
 // ===== 状態 =====
 let ws = null;
@@ -56,6 +58,8 @@ let turnCompletePending = false;
 let transcriptionSettleTimer = null;
 let pendingTranscriptCorrections = new Set();
 let activeCorrectionSession = 0;
+let completedTranscriptCorrections = new WeakSet();
+let transcriptMessageRefs = new WeakMap();
 let conversationLog = [];
 let timerInterval = null;
 let elapsedSeconds = 0;
@@ -73,6 +77,15 @@ let setupCompleted = false;
 let skillSheetOriginalFileName = '';
 let currentInterviewId = null;
 let interviewRecordCompleted = false;
+let interruptedInterviewId = null;
+let resumeInProgress = false;
+let resumeVersion = 0;
+let checkpointRevision = 0;
+let checkpointSaveQueue = Promise.resolve();
+let interruptedCheckpoint = null;
+let interruptionSavePromise = Promise.resolve(true);
+let pendingTurnInstruction = '';
+let responseTimeout = null;
 
 // ===== UI =====
 const $ = id => document.getElementById(id);
@@ -224,10 +237,12 @@ function addMessage(role, text, qNum = null) {
     spokenAt: new Date().toISOString()
   };
   conversationLog.push(logEntry);
-  return {
+  const messageRef = {
     bubble: msg.querySelector('.msg-bubble'),
     logEntry
   };
+  transcriptMessageRefs.set(logEntry, messageRef);
+  return messageRef;
 }
 
 function updateMessage(messageRef, text) {
@@ -291,7 +306,7 @@ async function requestTranscriptCorrection({
   followingInterviewerText,
   isReverseQuestionTurn
 }) {
-  if (rawText.length < 4 || /^(?:はい|いいえ|ありがとうございます|よろしくお願いします)[。！!]?$/.test(rawText)) {
+  if (!rawText.trim() || /^(?:はい|いいえ|ありがとうございます|よろしくお願いします)[。！!]?$/.test(rawText)) {
     return null;
   }
 
@@ -306,21 +321,24 @@ async function requestTranscriptCorrection({
       },
       body: JSON.stringify({
         rawText,
-        previousInterviewerText,
-        followingInterviewerText,
+        previousInterviewerText: previousInterviewerText.slice(0, MAX_CORRECTION_TURN_CONTEXT_CHARS),
+        followingInterviewerText: followingInterviewerText.slice(0, MAX_CORRECTION_TURN_CONTEXT_CHARS),
         isReverseQuestionTurn,
         domainContext: buildCorrectionDomainContext()
       }),
       signal: controller.signal
     });
     const data = await response.json();
-    if (!response.ok || data.shouldReplace !== true || typeof data.correctedText !== 'string') {
+    if (!response.ok || typeof data.shouldReplace !== 'boolean' || typeof data.correctedText !== 'string') {
+      return undefined;
+    }
+    if (!data.shouldReplace) {
       return null;
     }
     return data.correctedText.trim() || null;
   } catch (error) {
     console.warn('Transcript correction failed; using original transcript:', error);
-    return null;
+    return undefined;
   } finally {
     clearTimeout(timeoutId);
   }
@@ -337,8 +355,9 @@ function trackTranscriptCorrection(promise) {
 function correctCandidateMessage(messageRef, context) {
   const session = activeCorrectionSession;
   const correction = requestTranscriptCorrection(context).then(correctedText => {
-    if (session !== activeCorrectionSession || !correctedText) return;
-    updateMessage(messageRef, correctedText);
+    if (session !== activeCorrectionSession) return;
+    if (correctedText !== undefined) completedTranscriptCorrections.add(messageRef.logEntry);
+    if (correctedText) updateMessage(messageRef, correctedText);
   });
   trackTranscriptCorrection(correction);
 }
@@ -349,18 +368,56 @@ async function waitForPendingTranscriptCorrections() {
   }
 }
 
+async function reconcileTranscriptCorrections() {
+  await waitForPendingTranscriptCorrections();
+  // ターン中に失敗した補正と、終了直前に残った発言を保存前に確認する。
+  for (let index = 0; index < conversationLog.length; index++) {
+    const entry = conversationLog[index];
+    if (entry.role !== 'candidate' || completedTranscriptCorrections.has(entry)) continue;
+    const previousInterviewerText = conversationLog.slice(0, index)
+      .findLast(message => message.role === 'interviewer')?.text || '';
+    const followingInterviewerText = conversationLog.slice(index + 1)
+      .find(message => message.role === 'interviewer')?.text || '';
+    const messageRef = transcriptMessageRefs.get(entry) || { logEntry: entry };
+    correctCandidateMessage(messageRef, {
+      rawText: entry.rawText ?? entry.text,
+      previousInterviewerText,
+      followingInterviewerText,
+      isReverseQuestionTurn: isReverseQuestionContext(previousInterviewerText)
+    });
+  }
+  await waitForPendingTranscriptCorrections();
+}
+
 // ===== タイマー =====
 function startTimer() {
-  elapsedSeconds = 0;
-  $('timer').textContent = '00:00';
+  updateTimerDisplay();
   $('timer').classList.add('active');
   $('liveLabel')?.classList.add('active');
   timerInterval = setInterval(() => {
     elapsedSeconds++;
-    const minutes = String(Math.floor(elapsedSeconds / 60)).padStart(2, '0');
-    const seconds = String(elapsedSeconds % 60).padStart(2, '0');
-    $('timer').textContent = `${minutes}:${seconds}`;
+    updateTimerDisplay();
+    if (elapsedSeconds % 15 === 0) saveInterviewCheckpoint();
   }, 1000);
+}
+
+function updateTimerDisplay() {
+  const minutes = String(Math.floor(elapsedSeconds / 60)).padStart(2, '0');
+  const seconds = String(elapsedSeconds % 60).padStart(2, '0');
+  $('timer').textContent = `${minutes}:${seconds}`;
+}
+
+function clearResponseTimeout() {
+  clearTimeout(responseTimeout);
+  responseTimeout = null;
+}
+
+function armResponseTimeout() {
+  clearResponseTimeout();
+  responseTimeout = setTimeout(() => {
+    if (!isSessionActive || !isAwaitingModel) return;
+    cleanupSession('AIからの応答が途切れました。「途中から再開」で続けられます。');
+  }, MODEL_RESPONSE_TIMEOUT_MS);
 }
 
 function stopTimer() {
@@ -576,10 +633,58 @@ async function extractPdfSkillSheet(file) {
 }
 
 async function importSkillSheet(event) {
-  const input = event.target;
-  const file = input.files?.[0];
+  return importSkillSheetFile(event.target.files?.[0]);
+}
+
+function initializeSkillSheetDropZone() {
+  const zone = $('skillSheetDropZone');
+  let dragDepth = 0;
+  const reset = () => {
+    dragDepth = 0;
+    zone.classList.remove('is-dragging');
+  };
+  const dragenter = event => {
+    if (!Array.from(event.dataTransfer?.types || []).includes('Files')) return;
+    event.preventDefault();
+    dragDepth++;
+    if (!$('skillSheetFile').disabled) zone.classList.add('is-dragging');
+  };
+  const dragover = event => {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = $('skillSheetFile').disabled ? 'none' : 'copy';
+  };
+  const dragleave = event => {
+    event.preventDefault();
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) reset();
+  };
+  const drop = event => {
+    event.preventDefault();
+    reset();
+    if ($('skillSheetFile').disabled) return;
+    const files = event.dataTransfer?.files;
+    if (!files?.length) return;
+    if (files.length !== 1) {
+      const message = 'PDFは1ファイルずつ取り込んでください。';
+      setSkillSheetImportStatus(message, 'error');
+      showError(message);
+      return;
+    }
+    return importSkillSheetFile(files[0]);
+  };
+  const handlers = { dragenter, dragover, dragleave, drop };
+  Object.entries(handlers).forEach(([name, handler]) => zone.addEventListener(name, handler));
+  return () => {
+    Object.entries(handlers).forEach(([name, handler]) => zone.removeEventListener(name, handler));
+    reset();
+  };
+}
+
+async function importSkillSheetFile(file) {
+  const input = $('skillSheetFile');
   if (!file) return;
 
+  if (isSkillSheetImporting || input.disabled) return;
   if (isSessionActive || projectGenerationController) {
     showError('面談中・案件生成中はスキルシートを変更できません。');
     input.value = '';
@@ -735,8 +840,11 @@ function submitAnswer() {
   setStatus('回答を送信しました。面接官が考えています...', 'connected');
   showAiThinking();
   resetAudioDiagnostics();
-  ws.send(JSON.stringify({ realtimeInput: { text: buildTurnInstruction() } }));
+  pendingTurnInstruction = buildTurnInstruction();
+  ws.send(JSON.stringify({ realtimeInput: { text: pendingTurnInstruction } }));
   ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+  armResponseTimeout();
+  saveInterviewCheckpoint();
 }
 
 // ===== 音声再生キュー =====
@@ -955,6 +1063,8 @@ function finalizeCompletedTurn() {
   }
   aiTextBuffer = '';
   isAwaitingModel = false;
+  pendingTurnInstruction = '';
+  clearResponseTimeout();
 
   if (candidateMessage) {
     correctCandidateMessage(candidateMessage, {
@@ -975,6 +1085,7 @@ function finalizeCompletedTurn() {
     return;
   }
 
+  saveInterviewCheckpoint();
   pendingCaptureAfterPlayback = true;
   if (!isPlayingAudio && audioQueue.length === 0) beginAnswerRecording();
 }
@@ -992,7 +1103,7 @@ async function handleMessage(event, socket = ws) {
   if (data.setupComplete !== undefined) {
     setupCompleted = true;
     if (!timerInterval) startTimer();
-    if (!liveReconnectInProgress && selfIntroductionRequested) beginAnswerRecording();
+    if (!liveReconnectInProgress && !resumeInProgress && selfIntroductionRequested) beginAnswerRecording();
     return;
   }
 
@@ -1015,8 +1126,8 @@ async function handleMessage(event, socket = ws) {
       if (!isSessionActive || socket !== ws) return;
       if (sessionResumptionHandle && !isAwaitingModel) reconnectLiveSession();
       else {
-        showError('接続の更新に失敗しました。会話ログを保存して面談を終了します。');
-        cleanupSession('接続を再開できませんでした。もう一度面談を開始してください。');
+        showError('接続の更新に失敗しました。進捗を保存して面談を中断します。');
+        cleanupSession('接続を再開できませんでした。「途中から再開」で続けられます。');
       }
     }, Number.isFinite(seconds) ? Math.max(0, seconds * 1000 - 2000) : 0);
     if (sessionResumptionHandle && !isAnswerRecording && !isAwaitingModel
@@ -1026,6 +1137,7 @@ async function handleMessage(event, socket = ws) {
 
   const content = data.serverContent;
   if (!content) return;
+  if (isAwaitingModel) armResponseTimeout();
 
   if (content.interrupted === true) {
     clearPendingTurnFinalization();
@@ -1033,6 +1145,7 @@ async function handleMessage(event, socket = ws) {
     removeAiThinking();
     aiTextBuffer = '';
     isAwaitingModel = false;
+    clearResponseTimeout();
     pendingCaptureAfterPlayback = false;
     beginAnswerRecording();
     return;
@@ -1065,7 +1178,21 @@ async function handleMessage(event, socket = ws) {
 }
 
 // ===== システムプロンプト =====
+const ANSWER_UNDERSTANDING_POLICY = `## 回答の理解と担当範囲の確認
+- 復唱では、候補者が説明した開発方法・使用ツール・本人の担当範囲を保持し、直前の質問やスキルシートにある想定へ置き換えない
+- バイブコーディング、AI支援、コード生成、Claude Codeなどへの言及は、AIを使った開発方法として受け止める。ライブラリ利用や、本人が一から手作業で設計・実装したという意味に読み替えない
+- 「バイブコーディング」と特定の製品名は同義ではない。候補者が述べていない製品名・ライブラリ名は補わない
+- AIを使ったという回答だけで、本人に設計・実装経験がないとも、生成コードの設計判断や最適化まで本人が行ったとも断定しない
+- 深掘りが許可されたターンでは、AI支援で開発した回答に本人の作業が明示されていなければ、パフォーマンス改善や再利用性の工夫を尋ねる前に、本人が担当した指示・生成コードの確認・修正・動作検証のうち何を行ったかを一問で確認する
+- 深掘りなし、または深掘り上限に達したターンでは、AI利用を正確に復唱してから指定された次の質問へ進み、確認質問を追加しない
+- 例：候補者「Claude Codeを用いて作成しました」→「AIを活用して作成されたのですね。生成されたコードについて、ご自身ではどのような確認や修正を担当されましたか？」。この深掘りは許可されたターンでのみ行う
+- 聞き取れなかった開発方法や担当範囲は、想像して断定せず、深掘り可能なターンで確認する`;
+
 function buildTurnInstruction() {
+  return `${buildTurnProgressInstruction()}\n\n${ANSWER_UNDERSTANDING_POLICY}`;
+}
+
+function buildTurnProgressInstruction() {
   if (reverseQuestionActive) {
     return `[進行制御]
 候補者の直前の発言は逆質問です。最初の一文で質問の趣旨を自然に短く言い換えて確認してください。定型的な前置きは使わず、たとえば「参画後のチーム体制についてのご質問ですね」のように会話として自然につなげてください。質問があれば続けて簡潔かつ誠実に答え、最後に「他にはいかがですか？」と尋ねてください。質問がないことを明確に伝えた場合は、「ご質問は以上とのこと、承知しました」と自然に受け止め、続けて正確に「面談は以上です。本日はお時間をいただきありがとうございました。後ほど結果をご連絡いたします」と述べてください。`;
@@ -1152,7 +1279,9 @@ function buildSystemPrompt() {
 - 丁寧・テンポよく、ビジネスライクなトーンで話す
 
 ## 候補者のスキルシート（回答の理解と深掘りの文脈として参照すること）
-${skillSheet}`;
+${skillSheet}
+
+${ANSWER_UNDERSTANDING_POLICY}`;
 
   if (!interviewCustomization) return basePrompt;
 
@@ -1271,6 +1400,7 @@ async function createInterviewRecord() {
 
 // ===== セッション開始 =====
 async function startSession() {
+  if (isSessionActive || resumeInProgress) return;
   if (reviewGenerationInProgress) {
     showError('総評の保存が完了するまでお待ちください。');
     return;
@@ -1280,7 +1410,16 @@ async function startSession() {
   if (currentInterviewId && !interviewRecordCompleted) markInterviewInterrupted();
 
   closeLiveConnection();
+  interruptedInterviewId = null;
+  interruptedCheckpoint = null;
+  resumeVersion = 0;
+  checkpointRevision = 0;
+  elapsedSeconds = 0;
+  pendingTurnInstruction = '';
+  $('resumeBtn').style.display = 'none';
   activeCorrectionSession++;
+  completedTranscriptCorrections = new WeakSet();
+  transcriptMessageRefs = new WeakMap();
   interviewQuestionTarget = readQuestionCount();
   interviewFollowUpIntensity = $('followUpIntensity').value;
   interviewQuestions = [];
@@ -1361,6 +1500,7 @@ function startInterviewOpening() {
   selfIntroductionRequested = true;
   sessionStarted = true;
   isAwaitingModel = true;
+  armResponseTimeout();
   setNextButton({ visible: true, disabled: true });
   setStatus('AI面接官が案件を説明しています...', 'connected');
   ws.send(JSON.stringify({
@@ -1370,6 +1510,7 @@ function startInterviewOpening() {
       turnComplete: true
     }
   }));
+  saveInterviewCheckpoint();
 }
 
 async function fetchLiveToken() {
@@ -1416,7 +1557,11 @@ function connectLiveApi(token, handle, generation) {
           realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
-          systemInstruction: { parts: [{ text: buildSystemPrompt() }] }
+          systemInstruction: { parts: [{ text: buildSystemPrompt() + (resumeInProgress ? `
+\n## 中断からの再開
+この接続は保存済み面談の続きです。後から渡される会話履歴を引き継ぎ、開始時の案件説明や自己紹介を繰り返さないでください。
+主質問の進捗：${questionCount}/${interviewQuestionTarget}。現在の深掘り回数：${currentQuestionFollowUpCount}。逆質問中：${reverseQuestionActive}。
+候補者が回答中なら、回答送信まで応答を待ってください。` : '') }] }
         }
       }));
     };
@@ -1445,7 +1590,7 @@ function connectLiveApi(token, handle, generation) {
       }
       const detail = event.reason ? `: ${event.reason}` : '';
       showError(`Live APIから切断されました (code: ${event.code}${detail})`);
-      cleanupSession('接続が終了しました。もう一度面談を開始してください。');
+      cleanupSession('接続が途切れました。「途中から再開」で続けられます。');
     };
   });
 }
@@ -1487,11 +1632,12 @@ async function reconnectLiveSession() {
     }
   }
   liveReconnectInProgress = false;
-  showError('接続を再開できませんでした。会話ログを保存して面談を終了します。');
-  cleanupSession('接続を再開できませんでした。もう一度面談を開始してください。');
+  showError('接続を再開できませんでした。進捗を保存して面談を中断します。');
+  cleanupSession('接続を再開できませんでした。「途中から再開」で続けられます。');
 }
 
 function closeLiveConnection() {
+  clearResponseTimeout();
   liveConnectionGeneration++;
   clearTimeout(liveGoAwayTimer);
   liveGoAwayTimer = null;
@@ -1556,10 +1702,248 @@ async function startMicCapture() {
   }
 }
 
+// ===== 進捗の保存・途中再開 =====
+function captureInterviewCheckpoint() {
+  return {
+    durationSeconds: elapsedSeconds,
+    resumeVersion,
+    revision: ++checkpointRevision,
+    conversationLog: conversationLog.map(entry => ({ ...entry })),
+    progress: {
+      questionCount, currentQuestionFollowUpCount, reverseQuestionActive, sessionStarted,
+      selfIntroductionRequested, selfIntroductionCompleted, selfIntroductionFollowUpAsked,
+      isAwaitingModel, userTextBuffer, aiTextBuffer, pendingTurnInstruction
+    }
+  };
+}
+
+function queueCheckpointSave(id, snapshot, interrupted = false) {
+  const save = checkpointSaveQueue.then(async () => {
+    const response = await fetch(`/api/interviews/${encodeURIComponent(id)}/${interrupted ? 'interrupt' : 'checkpoint'}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(snapshot), signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) throw new Error('面談の進捗を保存できませんでした。');
+    return true;
+  });
+  checkpointSaveQueue = save.catch(error => {
+    console.warn('Interview checkpoint save failed:', error);
+    if (id === currentInterviewId || id === interruptedInterviewId) {
+      showError('進捗の保存に失敗しました。接続を確認し、この画面から再開してください。');
+    }
+    return false;
+  });
+  return checkpointSaveQueue;
+}
+
+function saveInterviewCheckpoint() {
+  if (!currentInterviewId || interviewRecordCompleted || !isSessionActive || !setupCompleted) return;
+  return queueCheckpointSave(currentInterviewId, captureInterviewCheckpoint());
+}
+
+function inferInterviewProgress(logs) {
+  // この機能の導入前の面談は、確定済みの質問と回答の順序から復元する。
+  const progress = {
+    questionCount: 0, currentQuestionFollowUpCount: 0, reverseQuestionActive: false,
+    sessionStarted: logs.length > 0, selfIntroductionRequested: logs.length > 0,
+    selfIntroductionCompleted: false, selfIntroductionFollowUpAsked: false,
+    isAwaitingModel: logs.at(-1)?.role === 'candidate', userTextBuffer: '', aiTextBuffer: '', pendingTurnInstruction: ''
+  };
+  let introductionResponses = 0;
+  for (const log of logs) {
+    if (log.role === 'candidate' && progress.questionCount === 0) introductionResponses++;
+    if (log.role !== 'interviewer') continue;
+    const number = extractQuestionNumber(log.text) || log.questionNumber;
+    if (number && number > progress.questionCount) {
+      progress.questionCount = number;
+      progress.currentQuestionFollowUpCount = 0;
+    } else if (progress.questionCount > 0 && !isReverseQuestionStart(log.text) && !progress.reverseQuestionActive) {
+      progress.currentQuestionFollowUpCount++;
+    }
+    if (isReverseQuestionStart(log.text)) progress.reverseQuestionActive = true;
+  }
+  const completedIntroductionResponses = introductionResponses
+    - (progress.questionCount === 0 && progress.isAwaitingModel ? 1 : 0);
+  progress.selfIntroductionFollowUpAsked = completedIntroductionResponses >= 1 || progress.questionCount > 0;
+  progress.selfIntroductionCompleted = completedIntroductionResponses >= 2 || progress.questionCount > 0;
+  return progress;
+}
+
+function restoreInterview(interview) {
+  const one = value => Array.isArray(value) ? value[0] : value;
+  const project = one(interview.interview_projects);
+  const configuration = one(interview.interview_configurations);
+  const sheet = one(interview.interview_skill_sheets);
+  if (!project || !configuration || !sheet) throw new Error('面談の設定情報が不足しています。');
+  interviewQuestionTarget = configuration.main_question_count;
+  interviewFollowUpIntensity = configuration.follow_up_intensity;
+  interviewQuestions = [...(interview.interview_questions || [])]
+    .filter(question => question.question_type === 'main')
+    .sort((a, b) => a.main_question_number - b.main_question_number)
+    .map(question => question.question_text);
+  if (interviewQuestions.length !== interviewQuestionTarget) throw new Error('保存された主質問が不足しています。');
+  const fields = {
+    projectName: project.project_name, interviewerRole: project.interviewer_role || '',
+    requiredSkills: project.required_skills, projectDetail: project.project_details || '',
+    skillSheet: sheet.content, questionCount: interviewQuestionTarget,
+    followUpIntensity: interviewFollowUpIntensity, interviewCustomization: configuration.customization || ''
+  };
+  Object.entries(fields).forEach(([id, value]) => { $(id).value = value; });
+  skillSheetOriginalFileName = sheet.original_file_name || '';
+  updateInterviewCustomizationCounter();
+  const questions = interview.interview_questions || [];
+  const logs = [...(interview.conversation_logs || [])].sort((a, b) => a.sequence_number - b.sequence_number)
+    .map(log => ({
+      role: log.speaker_role, rawText: log.raw_text ?? log.text, text: log.text,
+      questionNumber: questions.find(question => question.id === log.interview_question_id)?.main_question_number ?? null,
+      ...(log.spoken_at ? { spokenAt: log.spoken_at } : {})
+    }));
+  const progress = interview.progress || inferInterviewProgress(logs);
+  questionCount = progress.questionCount;
+  currentQuestionFollowUpCount = progress.currentQuestionFollowUpCount;
+  reverseQuestionActive = progress.reverseQuestionActive;
+  sessionStarted = progress.sessionStarted;
+  selfIntroductionRequested = progress.selfIntroductionRequested;
+  selfIntroductionCompleted = progress.selfIntroductionCompleted;
+  selfIntroductionFollowUpAsked = progress.selfIntroductionFollowUpAsked;
+  isAwaitingModel = progress.isAwaitingModel;
+  userTextBuffer = progress.userTextBuffer;
+  // 生成途中の面接官発言は確定ログに混ぜず、送信済み回答から再生成する。
+  aiTextBuffer = '';
+  pendingTurnInstruction = progress.pendingTurnInstruction;
+  elapsedSeconds = interview.duration_seconds || 0;
+  resumeVersion = interview.resume_version || 0;
+  checkpointRevision = 0;
+  activeCorrectionSession++;
+  completedTranscriptCorrections = new WeakSet();
+  transcriptMessageRefs = new WeakMap();
+  pendingTranscriptCorrections = new Set();
+  conversationLog = [];
+  $('transcriptBox').innerHTML = '';
+  // addMessageによるログの二重登録を避け、元の日時・原文を引き継ぐ。
+  for (const log of logs) {
+    const ref = addMessage(log.role === 'interviewer' ? 'interviewer' : 'user', log.text, log.questionNumber);
+    Object.assign(ref.logEntry, log);
+    if (log.text !== log.rawText) completedTranscriptCorrections.add(ref.logEntry);
+  }
+  renderQuestionDots(interviewQuestionTarget);
+  if (reverseQuestionActive) showReverseQuestionProgress();
+  else if (questionCount > 0) updateQCounter(questionCount);
+  else if (selfIntroductionRequested) showSelfIntroductionProgress();
+  updateTimerDisplay();
+  interviewRecordCompleted = false;
+  $('reviewPanel').classList.remove('show');
+}
+
+async function loadResumableInterview(id) {
+  const generation = liveConnectionGeneration;
+  try {
+    const response = await fetch(`/api/interviews/${encodeURIComponent(id)}/resume`, { cache: 'no-store' });
+    const data = await response.json();
+    if (generation !== liveConnectionGeneration || isSessionActive) return;
+    if (!response.ok) throw new Error(data.error || '面談情報を取得できませんでした。');
+    restoreInterview(data.interview);
+    interruptedInterviewId = id;
+    $('resumeBtn').style.display = '';
+    setStatus('APIキーを入力し、「途中から再開」を押してください。', 'idle');
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+function restoreLiveConversation() {
+  const turns = conversationLog.map(log => ({
+    role: log.role === 'interviewer' ? 'model' : 'user', parts: [{ text: log.text }]
+  }));
+  if (isAwaitingModel && userTextBuffer.trim()) {
+    turns.push({ role: 'user', parts: [{ text: userTextBuffer.trim() }] });
+  }
+  if (turns.length) ws.send(JSON.stringify({ clientContent: { turns, turnComplete: false } }));
+  if (!conversationLog.length && !userTextBuffer.trim()) {
+    selfIntroductionRequested = false;
+    startInterviewOpening();
+  } else if (isAwaitingModel) {
+    const instruction = pendingTurnInstruction || buildTurnInstruction();
+    pendingTurnInstruction = instruction;
+    ws.send(JSON.stringify({ clientContent: {
+      turns: [{ role: 'user', parts: [{ text: instruction }] }], turnComplete: true
+    } }));
+    showAiThinking();
+    armResponseTimeout();
+    setStatus('送信済みの回答から、面接官の応答を再開しています...', 'connected');
+  } else {
+    beginAnswerRecording();
+    setStatus('再開しました。最後の質問への回答の続きからお話しください 🎤', 'recording');
+  }
+}
+
+async function resumeSession() {
+  if (isSessionActive || resumeInProgress || reviewGenerationInProgress || !interruptedInterviewId) return;
+  if (isSkillSheetImporting || isSkillSheetLoading || projectGenerationController) {
+    showError('スキルシートの読込・案件生成の完了を待ってから再開してください。');
+    return;
+  }
+  if (!getApiKey()) { showError('APIキーを入力してください。'); return; }
+  resumeInProgress = true;
+  $('resumeBtn').disabled = true;
+  $('startBtn').disabled = true;
+  const id = interruptedInterviewId;
+  const requestGeneration = liveConnectionGeneration;
+  try {
+    if (!await interruptionSavePromise) {
+      if (!interruptedCheckpoint || !await queueCheckpointSave(id, interruptedCheckpoint, true)) {
+        throw new Error('中断時の進捗を保存できません。接続を確認して再度お試しください。');
+      }
+    }
+    if (requestGeneration !== liveConnectionGeneration) return;
+    const response = await fetch(`/api/interviews/${encodeURIComponent(id)}/resume`, {
+      method: 'POST', signal: AbortSignal.timeout(15000)
+    });
+    const data = await response.json();
+    if (requestGeneration !== liveConnectionGeneration) return;
+    if (!response.ok) throw new Error(data.error || '面談を再開できませんでした。');
+    closeLiveConnection();
+    clearPendingTurnFinalization();
+    restoreInterview(data.interview);
+    currentInterviewId = id;
+    interruptedInterviewId = null;
+    interruptedCheckpoint = null;
+    isSessionActive = true;
+    pendingAutoEnd = false;
+    pendingCaptureAfterPlayback = false;
+    isAnswerRecording = false;
+    $('resumeBtn').style.display = 'none';
+    $('startBtn').style.display = 'none';
+    $('endBtn').style.display = '';
+    setSkillSheetFileDisabled(true);
+    setSkillSheetFieldsDisabled(true);
+    setInterviewStructureDisabled(true);
+    setNextButton({ visible: true, disabled: true });
+    setStatus('面談を途中から再開しています...', 'idle');
+    const generation = liveConnectionGeneration;
+    const token = await fetchLiveToken();
+    if (!isSessionActive || generation !== liveConnectionGeneration) return;
+    await connectLiveApi(token, null, generation);
+    if (!isSessionActive || generation !== liveConnectionGeneration) return;
+    await startMicCapture();
+    if (!isSessionActive || generation !== liveConnectionGeneration) return;
+    restoreLiveConversation();
+    saveInterviewCheckpoint();
+  } catch (error) {
+    showError(`面談を再開できませんでした: ${error.message}`);
+    if (isSessionActive) cleanupSession('再開に失敗しました。「途中から再開」で再度お試しください。');
+  } finally {
+    resumeInProgress = false;
+    $('resumeBtn').disabled = false;
+    $('startBtn').disabled = false;
+  }
+}
+
 // ===== セッション終了・後片付け =====
 async function persistConversationLogs() {
   if (interviewRecordCompleted) return;
   if (!currentInterviewId) throw new Error('保存対象の面談IDがありません。');
+  await checkpointSaveQueue;
 
   const response = await fetch(`/api/interviews/${encodeURIComponent(currentInterviewId)}/complete`, {
     method: 'POST',
@@ -1577,13 +1961,10 @@ async function persistConversationLogs() {
 function markInterviewInterrupted() {
   if (!currentInterviewId || interviewRecordCompleted) return;
   const interviewId = currentInterviewId;
+  interruptedInterviewId = interviewId;
+  interruptedCheckpoint = captureInterviewCheckpoint();
   currentInterviewId = null;
-  fetch(`/api/interviews/${encodeURIComponent(interviewId)}/interrupt`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ durationSeconds: elapsedSeconds, conversationLog }),
-    keepalive: true
-  }).catch(error => console.warn('Failed to mark interview as interrupted:', error));
+  interruptionSavePromise = queueCheckpointSave(interviewId, interruptedCheckpoint, true);
 }
 
 function endSession() {
@@ -1642,6 +2023,7 @@ function stopMediaResources() {
 }
 
 function showStoppedControls() {
+  $('resumeBtn').style.display = interruptedInterviewId ? '' : 'none';
   $('startBtn').style.display = '';
   $('endBtn').style.display = 'none';
   setSkillSheetFileDisabled(false);
@@ -1651,6 +2033,8 @@ function showStoppedControls() {
 }
 
 function cleanupSession(statusMessage) {
+  clearResponseTimeout();
+  removeAiThinking();
   markInterviewInterrupted();
   clearPendingTurnFinalization();
   isSessionActive = false;
@@ -1669,7 +2053,7 @@ function cleanupSession(statusMessage) {
 // ===== 総評生成 =====
 function validateReview(review) {
   const validOverall = ['◎', '○', '△', '×'].includes(review?.overall);
-  const scoreKeys = ['技術力', 'コミュニケーション', '総合'];
+  const scoreKeys = ['技術力', 'コミュニケーション', '姿勢・意欲', '総合'];
   const validScores = scoreKeys.every(key => {
     const score = review?.scores?.[key];
     return Number.isInteger(score) && score >= 1 && score <= 5;
@@ -1708,7 +2092,7 @@ async function generateReview() {
   const requiredSkills = $('requiredSkills').value.trim() || '（必須スキル未設定）';
 
   try {
-    await waitForPendingTranscriptCorrections();
+    await reconcileTranscriptCorrections();
     $('reviewContent').innerHTML = `
       <div class="review-generating">
         <div class="review-spinner"></div>
@@ -1796,12 +2180,13 @@ function renderReview(review) {
           <div class="badge-label">総合評価</div>
           <div class="badge-mark">${escapeHtml(review.overall)}</div>
           <div class="badge-sub">${overallLabels[review.overall]}</div>
+          <div class="badge-score"><span>総合スコア</span><strong>${review.scores['総合']}<small> / 5</small></strong></div>
         </div>
         <div class="score-row">
           ${[
             { label: '技術力', key: '技術力' },
             { label: 'コミュニケーション', key: 'コミュニケーション' },
-            { label: '総合スコア', key: '総合' }
+            { label: '姿勢・意欲', key: '姿勢・意欲' }
           ].map(item => {
             const score = review.scores[item.key];
             return `
@@ -1849,16 +2234,19 @@ export function initializeInterviewApp() {
   const customization = $('interviewCustomization');
   const questionCountInput = $('questionCount');
   const startButton = $('startBtn');
+  const resumeButton = $('resumeBtn');
   const nextButton = $('nextBtn');
   const endButton = $('endBtn');
   const updateSkillSheetButton = $('updateSkillSheetBtn');
   const generateProjectButton = $('generateProjectBtn');
+  const cleanupDropZone = initializeSkillSheetDropZone();
 
   skillSheetFile.addEventListener('change', importSkillSheet);
   skillSheetInput.addEventListener('input', markSkillSheetEdited);
   customization.addEventListener('input', updateInterviewCustomizationCounter);
   questionCountInput.addEventListener('input', updateQuestionCountPreview);
   startButton.addEventListener('click', startSession);
+  resumeButton.addEventListener('click', resumeSession);
   nextButton.addEventListener('click', submitAnswer);
   endButton.addEventListener('click', endSession);
   updateSkillSheetButton.addEventListener('click', updateSkillSheet);
@@ -1867,14 +2255,21 @@ export function initializeInterviewApp() {
   updateInterviewCustomizationCounter();
   renderQuestionDots(DEFAULT_QUESTION_COUNT);
   setStatus('案件情報とスキルシートを入力して「面談開始」を押してください');
-  loadSkillSheet();
+  let mounted = true;
+  loadSkillSheet().then(() => {
+    const id = new URLSearchParams(window.location.search).get('resume');
+    if (mounted && id) loadResumableInterview(id);
+  });
 
   return () => {
+    mounted = false;
+    cleanupDropZone();
     skillSheetFile.removeEventListener('change', importSkillSheet);
     skillSheetInput.removeEventListener('input', markSkillSheetEdited);
     customization.removeEventListener('input', updateInterviewCustomizationCounter);
     questionCountInput.removeEventListener('input', updateQuestionCountPreview);
     startButton.removeEventListener('click', startSession);
+    resumeButton.removeEventListener('click', resumeSession);
     nextButton.removeEventListener('click', submitAnswer);
     endButton.removeEventListener('click', endSession);
     updateSkillSheetButton.removeEventListener('click', updateSkillSheet);

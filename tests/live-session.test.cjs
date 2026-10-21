@@ -13,7 +13,9 @@ function browser(fetchImpl) {
   const elements = new Map();
   const element = id => {
     if (!elements.has(id)) elements.set(id, {
-      value: '', textContent: '', disabled: false, style: {}, remove() {},
+      value: '', textContent: '', innerHTML: '', disabled: false, style: {}, remove() {},
+      appendChild() {}, replaceChildren() {},
+      querySelector: () => ({ textContent: '' }),
       classList: { add() {}, remove() {}, toggle() {} },
       getContext: () => ({ clearRect() {} })
     });
@@ -36,8 +38,10 @@ function browser(fetchImpl) {
   const intervals = new Map();
   const requests = [];
   const context = vm.createContext({
-    exports: {}, Blob, WebSocket, AbortSignal, console,
-    document: { getElementById: element, querySelectorAll: () => [] },
+    exports: {}, Blob, WebSocket, AbortSignal, AbortController, console,
+    document: { getElementById: element, querySelectorAll: () => [], createElement: () => ({
+      className: '', innerHTML: '', dataset: {}, querySelector: () => ({ textContent: '' })
+    }) },
     setTimeout: (callback, delay) => { timers.set(++nextTimer, { callback, delay }); return nextTimer; },
     clearTimeout: id => timers.delete(id),
     setInterval: callback => { intervals.set(++nextTimer, callback); return nextTimer; },
@@ -270,4 +274,273 @@ test('self introduction always gets one project-related question before Q1 for e
     assert.equal(app.run('questionCount'), 1);
     assert.equal(app.run('currentQuestionFollowUpCount'), 0);
   }
+});
+
+function setupTranscriptMessages(app) {
+  app.run(`
+    addMessage = (role, text) => {
+      const logEntry = { role: role === 'interviewer' ? 'interviewer' : 'candidate', rawText: text, text };
+      const messageRef = { logEntry, bubble: { textContent: text } };
+      conversationLog.push(logEntry);
+      transcriptMessageRefs.set(logEntry, messageRef);
+      return messageRef;
+    };
+    renderReview = () => {};
+    currentInterviewId = 'interview-1';
+  `);
+}
+
+const validReview = {
+  overall: '○', scores: { 技術力: 3, コミュニケーション: 3, '姿勢・意欲': 4, 総合: 3 },
+  technical: '設計経験あり', communication: '説明が具体的', attitude: '前向き', feedback: '経験を深める'
+};
+
+test('review displays the overall score below its rating and all three category scores separately', () => {
+  const app = browser();
+  app.run(`renderReview(${JSON.stringify(validReview)})`);
+  const html = app.element('reviewContent').innerHTML;
+  const badge = html.slice(html.indexOf('class="overall-badge"'), html.indexOf('class="score-row"'));
+  assert.match(badge, /総合評価[\s\S]*badge-mark[\s\S]*総合スコア[\s\S]*3/);
+  const categories = html.slice(html.indexOf('class="score-row"'), html.indexOf('class="review-sections"'));
+  assert.match(categories, /技術力/);
+  assert.match(categories, /コミュニケーション/);
+  assert.match(categories, /姿勢・意欲[\s\S]*sc-num">4/);
+  assert.doesNotMatch(categories, /総合スコア/);
+  assert.equal(app.run(`validateReview(${JSON.stringify(validReview)})`), true);
+  const missingScore = JSON.parse(JSON.stringify(validReview));
+  delete missingScore.scores['姿勢・意欲'];
+  assert.equal(app.run(`validateReview(${JSON.stringify(missingScore)})`), false);
+});
+
+test('short technical answers are corrected and long interviewer context fits the correction API limits', async () => {
+  const app = browser(() => Response.json({ correctedText: 'Java', shouldReplace: true }));
+  const result = await app.run(`requestTranscriptCorrection({
+    rawText: 'ジャバ', previousInterviewerText: '前'.repeat(5000),
+    followingInterviewerText: '後'.repeat(5000), isReverseQuestionTurn: false
+  })`);
+  assert.equal(result, 'Java');
+  const body = JSON.parse(app.requests[0].options.body);
+  assert.equal(body.rawText, 'ジャバ');
+  assert.equal(body.previousInterviewerText.length, 4000);
+  assert.equal(body.followingInterviewerText.length, 4000);
+  await app.run(`requestTranscriptCorrection({ rawText: 'はい', previousInterviewerText: '',
+    followingInterviewerText: '', isReverseQuestionTurn: false })`);
+  assert.equal(app.requests.length, 1, 'simple acknowledgements still avoid unnecessary requests');
+});
+
+test('manual ending waits for the last buffered answer correction before saving and reviewing', async () => {
+  let resolveCorrection;
+  const app = browser(url => {
+    if (url === '/api/correct-transcript') return new Promise(resolve => { resolveCorrection = resolve; });
+    if (url === '/api/review') return Response.json({ review: validReview });
+    return Response.json({});
+  });
+  setupTranscriptMessages(app);
+  app.run(`addMessage('interviewer', '使用した技術は何ですか？'); userTextBuffer = 'ジャバ'; endSession();`);
+  assert.equal(app.requests.length, 1);
+  assert.equal(app.requests[0].url, '/api/correct-transcript');
+  assert.equal(JSON.parse(app.requests[0].options.body).followingInterviewerText, '');
+  resolveCorrection(Response.json({ correctedText: 'Java', shouldReplace: true }));
+  for (let i = 0; i < 4; i++) await app.tick();
+  const saved = app.requests.find(call => call.url.endsWith('/complete'));
+  const reviewed = app.requests.find(call => call.url === '/api/review');
+  for (const call of [saved, reviewed]) {
+    assert.ok(call);
+    const answer = JSON.parse(call.options.body).conversationLog.at(-1);
+    assert.equal(answer.text, 'Java');
+    assert.equal(answer.rawText, 'ジャバ');
+  }
+  assert.equal(app.run('transcriptMessageRefs.get(conversationLog.at(-1)).bubble.textContent'), 'Java');
+  assert.equal(app.requests.filter(call => call.url === '/api/correct-transcript').length, 1);
+});
+
+test('automatic closing retries a failed last-answer correction with the closing context before saving', async () => {
+  let corrections = 0;
+  const app = browser(url => {
+    if (url === '/api/correct-transcript') return ++corrections === 1
+      ? Response.json({ error: 'temporary failure' }, { status: 502 })
+      : Response.json({ correctedText: '質問は以上です。', shouldReplace: true });
+    if (url === '/api/review') return Response.json({ review: validReview });
+    return Response.json({});
+  });
+  setupTranscriptMessages(app);
+  app.run(`questionCount = interviewQuestionTarget; reverseQuestionActive = true;
+    addMessage('interviewer', '他にはいかがですか？');
+    userTextBuffer = '質問は異常です。';
+    aiTextBuffer = '面談は以上です。本日はお時間をいただきありがとうございました。後ほど結果をご連絡いたします';
+    turnCompletePending = true; finalizeCompletedTurn();`);
+  for (let i = 0; i < 4; i++) await app.tick();
+  assert.equal(app.run('isSessionActive'), false);
+  assert.equal(corrections, 2);
+  const retry = app.requests.filter(call => call.url === '/api/correct-transcript')[1];
+  const context = JSON.parse(retry.options.body);
+  assert.equal(context.previousInterviewerText, '他にはいかがですか？');
+  assert.match(context.followingInterviewerText, /面談は以上です/);
+  assert.equal(context.isReverseQuestionTurn, true);
+  const saved = app.requests.find(call => call.url.endsWith('/complete'));
+  assert.equal(JSON.parse(saved.options.body).conversationLog[1].text, '質問は以上です。');
+});
+
+test('persistent correction failure retries once and preserves the original answer', async () => {
+  const app = browser(() => Response.json({ error: 'unavailable' }, { status: 502 }));
+  setupTranscriptMessages(app);
+  app.run(`const answer = addMessage('user', 'ジャバ');
+    correctCandidateMessage(answer, { rawText: 'ジャバ', previousInterviewerText: '',
+      followingInterviewerText: '', isReverseQuestionTurn: false });`);
+  await app.run('reconcileTranscriptCorrections()');
+  assert.equal(app.requests.length, 2);
+  assert.equal(app.run('conversationLog[0].text'), 'ジャバ');
+  assert.equal(app.run('pendingTranscriptCorrections.size'), 0);
+});
+
+test('successful no-change corrections are not repeated at the end', async () => {
+  const app = browser(() => Response.json({ correctedText: 'Java', shouldReplace: false }));
+  setupTranscriptMessages(app);
+  app.run(`const answer = addMessage('user', 'Java');
+    correctCandidateMessage(answer, { rawText: 'Java', previousInterviewerText: '',
+      followingInterviewerText: '', isReverseQuestionTurn: false });`);
+  await app.run('reconcileTranscriptCorrections()');
+  assert.equal(app.requests.length, 1);
+});
+
+function resumableInterview(overrides = {}) {
+  return {
+    id: 'interview-1', status: 'interrupted', duration_seconds: 540, resume_version: 1,
+    interview_projects: { project_name: 'API開発', interviewer_role: 'PL', required_skills: 'Java', project_details: '設計開発' },
+    interview_configurations: { main_question_count: 2, follow_up_intensity: 'deep', customization: 'ゆっくり' },
+    interview_skill_sheets: { content: 'Java経験3年', original_file_name: 'skills.pdf' },
+    interview_questions: [
+      { id: 'q1', question_type: 'main', main_question_number: 1, question_text: '設計経験は？' },
+      { id: 'q2', question_type: 'main', main_question_number: 2, question_text: 'テスト経験は？' }
+    ],
+    conversation_logs: [
+      { sequence_number: 1, speaker_role: 'interviewer', text: 'Q1です。設計経験は？', interview_question_id: 'q1' },
+      { sequence_number: 2, speaker_role: 'candidate', raw_text: 'ジャバで設計しました。', text: 'Javaで設計しました。', interview_question_id: 'q1' },
+      { sequence_number: 3, speaker_role: 'interviewer', text: '具体的に工夫した点は？', interview_question_id: 'q1' }
+    ],
+    progress: {
+      questionCount: 1, currentQuestionFollowUpCount: 1, reverseQuestionActive: false,
+      sessionStarted: true, selfIntroductionRequested: true, selfIntroductionCompleted: true,
+      selfIntroductionFollowUpAsked: true, isAwaitingModel: false,
+      userTextBuffer: 'エラー応答を', aiTextBuffer: '', pendingTurnInstruction: ''
+    }, ...overrides
+  };
+}
+
+async function openResumedSocket(app) {
+  for (let i = 0; i < 6 && !app.sockets.length; i++) await app.tick();
+  const socket = app.sockets.at(-1);
+  assert.ok(socket);
+  socket.open();
+  await socket.message({ setupComplete: {} });
+  return socket;
+}
+
+test('a silent model response saves pending answer and progress, then exposes manual resume without completing the interview', async () => {
+  const app = browser(() => Response.json({ saved: true }));
+  await app.connect();
+  app.run(`currentInterviewId = 'interview-1'; questionCount = 2; userTextBuffer = '設計を担当しました。'; submitAnswer();`);
+  const timeout = [...app.timers.values()].find(timer => timer.delay === 45000);
+  assert.ok(timeout);
+  timeout.callback();
+  await app.run('checkpointSaveQueue');
+  const saved = app.requests.find(call => call.url.endsWith('/interrupt'));
+  const snapshot = JSON.parse(saved.options.body);
+  assert.equal(snapshot.progress.userTextBuffer, '設計を担当しました。');
+  assert.equal(snapshot.progress.questionCount, 2);
+  assert.equal(snapshot.progress.isAwaitingModel, true);
+  assert.match(snapshot.progress.pendingTurnInstruction, /進行制御/);
+  assert.equal(app.element('resumeBtn').style.display, '');
+  assert.equal(app.run('isSessionActive'), false);
+  assert.equal(app.requests.some(call => call.url === '/api/review' || call.url.endsWith('/complete')), false);
+});
+
+test('fresh connection restores a mid-answer interview with the same ID, elapsed time and follow-up count', async () => {
+  const interview = resumableInterview();
+  const app = browser(url => url.endsWith('/resume') ? Response.json({ interview })
+    : url === '/api/live-token' ? Response.json({ token: 'resume-token' }) : Response.json({ saved: true }));
+  app.run(`isSessionActive = false; interruptedInterviewId = 'interview-1'; startMicCapture = async () => {};`);
+  const pending = app.run('resumeSession()');
+  const socket = await openResumedSocket(app);
+  await pending;
+  assert.equal(app.run('currentInterviewId'), 'interview-1');
+  assert.equal(app.run('elapsedSeconds'), 540);
+  assert.equal(app.element('timer').textContent, '09:00');
+  assert.equal(app.run('questionCount'), 1);
+  assert.equal(app.run('currentQuestionFollowUpCount'), 1);
+  assert.equal(app.run('conversationLog.length'), 3);
+  assert.equal(app.run('conversationLog[1].rawText'), 'ジャバで設計しました。');
+  assert.equal(app.run('userTextBuffer'), 'エラー応答を');
+  assert.equal(app.run('isAnswerRecording'), true);
+  assert.deepEqual(socket.sent[0].setup.sessionResumption, {});
+  assert.match(socket.sent[0].setup.systemInstruction.parts[0].text, /中断からの再開/);
+  assert.equal(socket.sent[1].clientContent.turns.length, 3);
+  assert.equal(socket.sent[1].clientContent.turnComplete, false);
+  assert.equal(socket.sent.filter(message => message.realtimeInput?.activityStart).length, 1);
+  assert.equal(socket.sent.some(message => message.clientContent?.turnComplete), false, 'does not restart the opening or question');
+  assert.equal(app.requests.some(call => call.url === '/api/questions' || call.url === '/api/interviews'), false);
+});
+
+test('resume regenerates an interrupted model response once without resending or dropping the submitted answer', async () => {
+  const base = resumableInterview();
+  const interview = resumableInterview({ progress: { ...base.progress,
+    isAwaitingModel: true, userTextBuffer: 'エラー応答を統一しました。', aiTextBuffer: 'エラーを',
+    pendingTurnInstruction: '[進行制御] Q2です。テスト経験は？と尋ねてください。'
+  } });
+  const app = browser(url => url.endsWith('/resume') ? Response.json({ interview })
+    : url === '/api/live-token' ? Response.json({ token: 'resume-token' })
+    : url === '/api/correct-transcript' ? Response.json({ correctedText: 'エラー応答を統一しました。', shouldReplace: false })
+    : Response.json({ saved: true }));
+  app.run(`isSessionActive = false; interruptedInterviewId = 'interview-1'; startMicCapture = async () => {}; showAiThinking = () => {};`);
+  const pending = app.run('resumeSession()');
+  const socket = await openResumedSocket(app);
+  await pending;
+  assert.equal(app.run('isAnswerRecording'), false);
+  const history = socket.sent.find(message => message.clientContent?.turnComplete === false).clientContent;
+  assert.equal(history.turns.at(-1).parts[0].text, 'エラー応答を統一しました。');
+  const generation = socket.sent.filter(message => message.clientContent?.turnComplete === true);
+  assert.equal(generation.length, 1);
+  assert.equal(generation[0].clientContent.turns[0].parts[0].text, interview.progress.pendingTurnInstruction);
+  assert.equal(app.run('currentQuestionFollowUpCount'), 1);
+  assert.equal(app.run('aiTextBuffer'), '');
+  await socket.message({ serverContent: { outputTranscription: { text: 'Q2です。テスト経験は？' }, turnComplete: true } });
+  [...app.timers.values()].find(timer => timer.delay === 800).callback();
+  assert.equal(app.run('conversationLog.filter(log => log.role === "candidate").length'), 2);
+  assert.equal(app.run('conversationLog.at(-2).text'), 'エラー応答を統一しました。');
+  assert.equal(app.run('questionCount'), 2);
+  assert.equal(app.run('isAnswerRecording'), true);
+});
+
+test('resume preserves reverse-question and self-introduction stages and infers progress for legacy logs', () => {
+  const app = browser();
+  for (const stage of [
+    { questionCount: 2, reverseQuestionActive: true },
+    { questionCount: 0, selfIntroductionCompleted: false, selfIntroductionFollowUpAsked: true }
+  ]) {
+    const base = resumableInterview();
+    app.run(`restoreInterview(${JSON.stringify({ ...base, progress: { ...base.progress, ...stage } })});`);
+    for (const [key, value] of Object.entries(stage)) assert.equal(app.run(key), value);
+  }
+  const base = resumableInterview({ progress: null });
+  app.run(`restoreInterview(${JSON.stringify(base)})`);
+  assert.equal(app.run('questionCount'), 1);
+  assert.equal(app.run('currentQuestionFollowUpCount'), 1);
+  const intro = app.run(`inferInterviewProgress([
+    { role: 'interviewer', text: '自己紹介をお願いします。' }, { role: 'candidate', text: 'Java経験3年です。' }
+  ])`);
+  assert.equal(intro.selfIntroductionFollowUpAsked, false);
+  assert.equal(intro.isAwaitingModel, true);
+});
+
+test('new resume can be cancelled while its server request is pending', async () => {
+  let finish;
+  const app = browser(() => new Promise(resolve => { finish = resolve; }));
+  app.run(`isSessionActive = false; interruptedInterviewId = 'interview-1';`);
+  const pending = app.run('resumeSession()');
+  await app.tick();
+  app.run('closeLiveConnection()');
+  finish(Response.json({ interview: resumableInterview() }));
+  await pending;
+  assert.equal(app.sockets.length, 0);
+  assert.equal(app.run('isSessionActive'), false);
 });

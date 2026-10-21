@@ -19,7 +19,7 @@ test('review accepts conversation without a skill sheet and ignores any legacy s
   const prompts = [];
   const saved = [];
   const review = {
-    overall: '○', scores: { 技術力: 3, コミュニケーション: 3, 総合: 3 },
+    overall: '○', scores: { 技術力: 3, コミュニケーション: 3, '姿勢・意欲': 4, 総合: 3 },
     technical: '会話で確認した設計経験。', communication: '具体的な説明。',
     attitude: '前向きな回答。', feedback: '判断理由をさらに具体化してください。'
   };
@@ -59,4 +59,15 @@ test('review accepts conversation without a skill sheet and ignores any legacy s
   assert.match(prompts[0], /エラー応答を統一/);
   assert.equal(saved.length, 3);
   assert.equal(saved[0].args.p_interview_id, input.interviewId);
+  assert.equal(saved[0].args.p_review.scores['姿勢・意欲'], 4);
+
+  for (const score of [undefined, 0, 6, 4.5, '4']) {
+    review.scores['姿勢・意欲'] = score;
+    const response = await exports.POST(new Request('http://localhost/api/review', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-gemini-api-key': 'test-key' },
+      body: JSON.stringify(input)
+    }));
+    assert.equal(response.status, 502, 'missing or invalid attitude scores cannot be saved');
+  }
+  assert.equal(saved.length, 3);
 });
