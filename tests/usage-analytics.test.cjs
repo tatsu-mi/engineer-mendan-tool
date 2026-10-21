@@ -170,6 +170,24 @@ test('analytics page protects data and renders member filters and history links'
   const ascending = renderToStaticMarkup(await exports.default({ searchParams: Promise.resolve({ ...(await props.searchParams), sort: 'average', direction: 'asc' }) }));
   assert.match(ascending, /aria-sort="ascending"/);
   assert.match(ascending, /sort=average&amp;direction=desc/);
+
+  const defaultHtml = renderToStaticMarkup(await exports.default({ searchParams: Promise.resolve({}) }));
+  assert.match(defaultHtml, /type="checkbox"[^>]*checked=""/);
+  assert.match(defaultHtml, /メンバー別利用状況（1人）/);
+  assert.doesNotMatch(defaultHtml, /管理者本人/);
+
+  const includedHtml = renderToStaticMarkup(await exports.default({ searchParams: Promise.resolve({ excludeAdmins: '0' }) }));
+  assert.doesNotMatch(includedHtml, /type="checkbox"[^>]*checked/);
+  assert.match(includedHtml, /type="hidden" name="excludeAdmins" value="0"/);
+  assert.match(includedHtml, /メンバー別利用状況（2人）/);
+  assert.match(includedHtml, /管理者本人/);
+  const includedLinks = [...includedHtml.matchAll(/class="analytics-sort" href="([^"]+)"/g)].map(match => new URL(match[1].replaceAll('&amp;', '&'), 'http://localhost'));
+  assert.equal(includedLinks.length, 10);
+  for (const link of includedLinks) {
+    assert.equal(link.searchParams.get('excludeAdmins'), '0');
+    const sortedHtml = renderToStaticMarkup(await exports.default({ searchParams: Promise.resolve(Object.fromEntries(link.searchParams)) }));
+    assert.match(sortedHtml, /メンバー別利用状況（2人）/);
+  }
 });
 
 

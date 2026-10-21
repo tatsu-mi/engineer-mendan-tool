@@ -42,7 +42,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
     periodError = error instanceof Error ? error.message : '期間を確認してください。';
     period = getUsagePeriod({});
   }
-  const excludeAdmins = params.excludeAdmins === '1';
+  const excludeAdmins = params.excludeAdmins !== '0';
   const sort = getUsageSort(params);
   const rows = periodError ? [] : sortUsage(aggregateUsage(data.members, data.interviews, data.administratorEmails, period, excludeAdmins), sort.column, sort.direction);
   const total = rows.reduce((sum, row) => ({
@@ -82,7 +82,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
               const query = new URLSearchParams({
                 period: period.preset, start: period.start, end: period.end,
                 sort: column.key, direction: nextDirection,
-                ...(excludeAdmins ? { excludeAdmins: '1' } : {})
+                excludeAdmins: excludeAdmins ? '1' : '0'
               });
               return <th scope="col" key={column.key} aria-sort={active ? sort.direction === 'asc' ? 'ascending' : 'descending' : undefined}>
                 <a className="analytics-sort" href={`/analytics?${query}`} aria-label={`${column.label}を${nextDirection === 'asc' ? '昇順' : '降順'}に並べ替え`}>

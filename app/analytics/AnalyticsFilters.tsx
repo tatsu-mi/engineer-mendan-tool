@@ -13,6 +13,7 @@ type Props = {
 
 export default function AnalyticsFilters({ preset, start, end, sort, direction, excludeAdmins }: Props) {
   const [selectedPeriod, setSelectedPeriod] = useState(preset);
+  const [excludeAdministrators, setExcludeAdministrators] = useState(excludeAdmins);
   const customPeriod = selectedPeriod === 'custom';
 
   return (
@@ -24,7 +25,8 @@ export default function AnalyticsFilters({ preset, start, end, sort, direction, 
       <label>終了日（任意期間）<input className="input-base" type="date" name="end" defaultValue={end} disabled={!customPeriod} /></label>
       <input type="hidden" name="sort" value={sort} />
       <input type="hidden" name="direction" value={direction} />
-      <label className="analytics-checkbox"><input type="checkbox" name="excludeAdmins" value="1" defaultChecked={excludeAdmins} />管理者を除外する</label>
+      {!excludeAdministrators && <input type="hidden" name="excludeAdmins" value="0" />}
+      <label className="analytics-checkbox"><input type="checkbox" name="excludeAdmins" value="1" checked={excludeAdministrators} onChange={event => setExcludeAdministrators(event.target.checked)} />管理者を除外する</label>
       <button className="btn btn-primary" type="submit">集計する</button>
     </form>
   );
