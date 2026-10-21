@@ -291,6 +291,26 @@ export default function InterviewApp({ userEmail, isAdministrator = false }: Int
                   <span className="visualizer-label">Audio input</span>
                   <canvas id="visualizer" />
                 </div>
+                <div className="local-recording">
+                  <label className="field-label" htmlFor="recordingMode">録音・録画</label>
+                  <select className="select-base" id="recordingMode" defaultValue="off" aria-describedby="recordingHint">
+                    <option value="off">記録しない</option>
+                    <option value="audio">音声のみ</option>
+                    <option value="video">音声＋カメラ映像</option>
+                  </select>
+                  <div className="recording-quality" id="recordingQualityField" hidden>
+                    <label className="field-label" htmlFor="recordingQuality">画質</label>
+                    <select className="select-base" id="recordingQuality" defaultValue="standard" disabled>
+                      <option value="low">低</option>
+                      <option value="standard">標準</option>
+                      <option value="high">高</option>
+                    </select>
+                  </div>
+                  <p className="controls-hint" id="recordingHint">面談開始・再開時に記録を開始します。自分とAIの音声は音量差を抑えて収録します。録画データはDB・サーバーに保存されません。終了・中断後、ページを閉じる前にダウンロードしてください。長時間の記録は端末のメモリを使用します。</p>
+                  <p className="controls-hint" id="recordingStatus" role="status" aria-live="polite" />
+                  <video className="recording-preview" id="recordingPreview" autoPlay muted playsInline hidden aria-label="録画中のカメラ映像" />
+                  <ul className="recording-downloads" id="recordingDownloads" aria-label="録音・録画のダウンロード" />
+                </div>
                 <div className="controls-row">
                   <button className="btn btn-primary" id="startBtn" type="button">面談を開始</button>
                   <button className="btn btn-primary" id="resumeBtn" type="button" style={{ display: 'none' }}>途中から再開</button>

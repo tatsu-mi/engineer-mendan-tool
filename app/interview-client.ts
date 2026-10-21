@@ -20,6 +20,11 @@ const AUDIO_DIAGNOSTIC_INTERVAL_CHUNKS = 20;
 const LIVE_CONNECTION_TIMEOUT_MS = 20000;
 const MAX_LIVE_RECONNECT_ATTEMPTS = 3;
 const MODEL_RESPONSE_TIMEOUT_MS = 45000;
+const RECORDING_VIDEO_QUALITIES = {
+  low: { width: 320, height: 180, maxHeight: 240, frameRate: 8, maxFrameRate: 10, bitRate: 100000 },
+  standard: { width: 640, height: 360, maxHeight: 480, frameRate: 12, maxFrameRate: 15, bitRate: 300000 },
+  high: { width: 1280, height: 720, maxHeight: 720, frameRate: 24, maxFrameRate: 30, bitRate: 1500000 }
+};
 
 // ===== 状態 =====
 let ws = null;
@@ -86,6 +91,10 @@ let interruptedCheckpoint = null;
 let interruptionSavePromise = Promise.resolve(true);
 let pendingTurnInstruction = '';
 let responseTimeout = null;
+let localRecording = null;
+let localRecordingGeneration = 0;
+let recordingDownloads = new Set();
+let recordingPageActive = false;
 
 // ===== UI =====
 const $ = id => document.getElementById(id);
@@ -118,6 +127,8 @@ function setNextButton({ visible, disabled }) {
 }
 
 function setInterviewStructureDisabled(disabled) {
+  if ($('recordingMode')) $('recordingMode').disabled = disabled || typeof MediaRecorder === 'undefined';
+  updateRecordingQualityControl();
   [
     'projectName',
     'interviewerRole',
@@ -920,6 +931,10 @@ async function drainAudioQueue() {
       outputAnalyser = audioContext.createAnalyser();
       outputAnalyser.fftSize = 256;
       outputAnalyser.connect(audioContext.destination);
+      if (localRecording?.aiChannel) {
+        outputAnalyser.connect(localRecording.aiChannel.analyser);
+        localRecording.output = outputAnalyser;
+      }
     }
 
     if (scheduledAudioSources.size === 0) {
@@ -1650,6 +1665,204 @@ function closeLiveConnection() {
   if (socket && socket.readyState <= WebSocket.OPEN) socket.close(1000);
 }
 
+// ===== ブラウザ内だけで保持する録音・録画 =====
+function updateRecordingQualityControl() {
+  const video = $('recordingMode')?.value === 'video';
+  if ($('recordingQualityField')) $('recordingQualityField').hidden = !video;
+  if ($('recordingQuality')) $('recordingQuality').disabled = !video || $('recordingMode').disabled;
+}
+
+function createRecordingAudioChannel(initialGain, maxGain, compressor) {
+  const analyser = audioContext.createAnalyser();
+  analyser.fftSize = 2048;
+  const gain = audioContext.createGain();
+  gain.gain.value = initialGain;
+  analyser.connect(gain);
+  gain.connect(compressor);
+  return { analyser, gain, maxGain, samples: new Float32Array(analyser.fftSize) };
+}
+
+function balanceRecordingAudio(recording) {
+  for (const channel of [recording.micChannel, recording.aiChannel]) {
+    channel.analyser.getFloatTimeDomainData(channel.samples);
+    let sum = 0;
+    for (const sample of channel.samples) sum += sample * sample;
+    const rms = Math.sqrt(sum / channel.samples.length);
+    // 無音や小さな環境音に反応してゲインを上げない。声の実効値を同じ目標へ近づける。
+    if (rms < 0.01) continue;
+    const target = Math.max(0.25, Math.min(channel.maxGain, 0.12 / rms));
+    const current = channel.gain.gain.value;
+    channel.gain.gain.setTargetAtTime(target, audioContext.currentTime, target < current ? 0.08 : 0.4);
+  }
+}
+
+async function startLocalRecording() {
+  const mode = $('recordingMode')?.value;
+  if (!isSessionActive || !mode || mode === 'off') return;
+  const qualityName = $('recordingQuality')?.value;
+  const quality = RECORDING_VIDEO_QUALITIES[
+    Object.hasOwn(RECORDING_VIDEO_QUALITIES, qualityName) ? qualityName : 'standard'
+  ];
+  const generation = ++localRecordingGeneration;
+  const recording = {
+    recorder: null, destination: null, micSource: null, camera: null,
+    output: null, chunks: [], failed: false, released: false,
+    micChannel: null, aiChannel: null, compressor: null, balanceTimer: null,
+    startedAt: new Date(), mode
+  };
+  localRecording = recording;
+  const status = text => {
+    if (recordingPageActive && generation === localRecordingGeneration) $('recordingStatus').textContent = text;
+  };
+  try {
+    if (typeof MediaRecorder === 'undefined') throw new Error('このブラウザは録音・録画に対応していません。');
+    status(mode === 'video' ? 'カメラの利用を許可してください。' : '録音を準備しています...');
+    if (mode === 'video') {
+      recording.camera = await navigator.mediaDevices.getUserMedia({
+        audio: false, video: {
+          width: { ideal: quality.width, max: quality.width },
+          height: { ideal: quality.height, max: quality.maxHeight },
+          frameRate: { ideal: quality.frameRate, max: quality.maxFrameRate }
+        }
+      });
+    }
+    if (!isSessionActive || generation !== localRecordingGeneration) {
+      releaseLocalRecording(recording);
+      return;
+    }
+    recording.destination = audioContext.createMediaStreamDestination();
+    // 録音専用の経路で音量を調整する。面談の再生音量・AIへ送るマイク音声には影響させない。
+    recording.compressor = audioContext.createDynamicsCompressor();
+    recording.compressor.threshold.value = -6;
+    recording.compressor.knee.value = 6;
+    recording.compressor.ratio.value = 12;
+    recording.compressor.attack.value = 0.003;
+    recording.compressor.release.value = 0.25;
+    recording.compressor.connect(recording.destination);
+    recording.micChannel = createRecordingAudioChannel(2, 4, recording.compressor);
+    recording.aiChannel = createRecordingAudioChannel(0.65, 1.5, recording.compressor);
+    recording.micSource = audioContext.createMediaStreamSource(mediaStream);
+    recording.micSource.connect(recording.micChannel.analyser);
+    if (outputAnalyser) {
+      outputAnalyser.connect(recording.aiChannel.analyser);
+      recording.output = outputAnalyser;
+    }
+    const stream = new MediaStream([
+      ...recording.destination.stream.getAudioTracks(),
+      ...(recording.camera?.getVideoTracks() || [])
+    ]);
+    const candidates = mode === 'video'
+      ? ['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
+      : ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+    const mimeType = candidates.find(type => MediaRecorder.isTypeSupported(type));
+    const recorder = new MediaRecorder(stream, {
+      ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 64000,
+      ...(mode === 'video' ? { videoBitsPerSecond: quality.bitRate } : {})
+    });
+    recording.recorder = recorder;
+    recorder.ondataavailable = event => {
+      if (recordingPageActive && event.data.size > 0) recording.chunks.push(event.data);
+    };
+    recorder.onerror = () => {
+      recording.failed = true;
+      status('記録中にエラーが発生しました。取得済みのデータがあれば保存します。面談は継続できます。');
+      if (localRecording === recording) stopLocalRecording();
+    };
+    recorder.onstop = () => {
+      releaseLocalRecording(recording);
+      if (localRecording === recording) {
+        localRecording = null;
+        const preview = $('recordingPreview');
+        preview.srcObject = null;
+        preview.hidden = true;
+      }
+      if (!recordingPageActive) { recording.chunks = []; return; }
+      if (recording.chunks.length > 0) {
+        const type = recorder.mimeType || recording.chunks[0].type;
+        const blob = new Blob(recording.chunks, { type });
+        const extension = type.includes('mp4') ? (mode === 'video' ? 'mp4' : 'm4a')
+          : type.includes('ogg') ? 'ogg' : 'webm';
+        const timestamp = recording.startedAt.toISOString().replace(/[:.]/g, '-');
+        const filename = `interview-${timestamp}.${extension}`;
+        const url = URL.createObjectURL(blob);
+        recordingDownloads.add(url);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        link.textContent = `${mode === 'video' ? '録画' : '録音'}をダウンロード (${(blob.size / 1024 / 1024).toFixed(1)} MB) — ${filename}`;
+        const item = document.createElement('li');
+        item.appendChild(link);
+        $('recordingDownloads').appendChild(item);
+      }
+      recording.chunks = [];
+      // 次の面談の記録状態を、前回の非同期停止イベントで上書きしない。
+      if (!localRecording) $('recordingStatus').textContent = recording.failed
+        ? '記録にエラーがありました。ダウンロードしたファイルを確認してください。'
+        : '記録を終了しました。ページを閉じる前にダウンロードしてください。';
+    };
+    recorder.start(1000);
+    recording.balanceTimer = setInterval(() => balanceRecordingAudio(recording), 100);
+    if (recording.camera) {
+      const preview = $('recordingPreview');
+      preview.srcObject = recording.camera;
+      preview.hidden = false;
+      preview.play()?.catch(() => {});
+      recording.camera.getVideoTracks().forEach(track => {
+        track.onended = () => {
+          recording.failed = true;
+          if (localRecording === recording) stopLocalRecording();
+        };
+      });
+    }
+    status(mode === 'video' ? '● 録画中（自分・AIの音声＋カメラ映像）' : '● 録音中（自分・AIの音声）');
+  } catch (error) {
+    if (recording.recorder?.state === 'recording') recording.recorder.stop();
+    if (generation === localRecordingGeneration) {
+      status(`記録を開始できませんでした: ${error.message} 面談は記録なしで継続します。`);
+      localRecording = null;
+    }
+    releaseLocalRecording(recording);
+  }
+}
+
+function releaseLocalRecording(recording) {
+  // カメラ許可待ちで停止された場合も、後から得られたトラックを解放する。
+  recording.camera?.getTracks().forEach(track => { track.onended = null; track.stop(); });
+  if (recording.released) return;
+  recording.released = true;
+  if (recording.balanceTimer !== null) clearInterval(recording.balanceTimer);
+  recording.micSource?.disconnect();
+  if (recording.output && recording.aiChannel) recording.output.disconnect(recording.aiChannel.analyser);
+  for (const channel of [recording.micChannel, recording.aiChannel]) {
+    channel?.analyser.disconnect();
+    channel?.gain.disconnect();
+  }
+  recording.compressor?.disconnect();
+  recording.destination?.stream.getTracks().forEach(track => track.stop());
+}
+
+function stopLocalRecording() {
+  localRecordingGeneration++;
+  const recording = localRecording;
+  if (!recording) return;
+  localRecording = null;
+  const preview = $('recordingPreview');
+  if (preview) { preview.srcObject = null; preview.hidden = true; }
+  if (recordingPageActive) $('recordingStatus').textContent = '記録を終了しています...';
+  if (recording.recorder && recording.recorder.state !== 'inactive') {
+    recording.recorder.stop();
+  } else if (!recording.recorder) {
+    releaseLocalRecording(recording);
+    if (recordingPageActive) $('recordingStatus').textContent = '記録を開始せず終了しました。';
+  }
+}
+
+function warnBeforeRecordingLeave(event) {
+  if (!localRecording && recordingDownloads.size === 0) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+
 // ===== マイクキャプチャ =====
 async function startMicCapture() {
   const generation = liveConnectionGeneration;
@@ -1696,6 +1909,7 @@ async function startMicCapture() {
         }
       }));
     };
+    await startLocalRecording();
   } catch (error) {
     showError(`マイクにアクセスできませんでした: ${error.message}`);
     cleanupSession('マイクを利用できないため面談を開始できませんでした。');
@@ -2009,6 +2223,7 @@ function endSession() {
 }
 
 function stopMediaResources() {
+  stopLocalRecording();
   if (scriptProcessor) {
     scriptProcessor.disconnect();
     scriptProcessor = null;
@@ -2023,6 +2238,8 @@ function stopMediaResources() {
 }
 
 function showStoppedControls() {
+  if ($('recordingMode') && typeof MediaRecorder !== 'undefined') $('recordingMode').disabled = false;
+  updateRecordingQualityControl();
   $('resumeBtn').style.display = interruptedInterviewId ? '' : 'none';
   $('startBtn').style.display = '';
   $('endBtn').style.display = 'none';
@@ -2229,6 +2446,14 @@ function renderReview(review) {
 }
 
 export function initializeInterviewApp() {
+  recordingPageActive = true;
+  if (typeof MediaRecorder === 'undefined') {
+    $('recordingMode').disabled = true;
+    $('recordingStatus').textContent = 'このブラウザは録音・録画に対応していません。';
+  }
+  window.addEventListener('beforeunload', warnBeforeRecordingLeave);
+  $('recordingMode').addEventListener('change', updateRecordingQualityControl);
+  updateRecordingQualityControl();
   const skillSheetFile = $('skillSheetFile');
   const skillSheetInput = $('skillSheet');
   const customization = $('interviewCustomization');
@@ -2262,6 +2487,11 @@ export function initializeInterviewApp() {
   });
 
   return () => {
+    recordingPageActive = false;
+    window.removeEventListener('beforeunload', warnBeforeRecordingLeave);
+    $('recordingMode').removeEventListener('change', updateRecordingQualityControl);
+    recordingDownloads.forEach(url => URL.revokeObjectURL(url));
+    recordingDownloads.clear();
     mounted = false;
     cleanupDropZone();
     skillSheetFile.removeEventListener('change', importSkillSheet);

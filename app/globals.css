@@ -218,6 +218,14 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .control-panel .btn-danger { color: #f2aaa4; border-color: rgba(242,170,164,.4); }
 .control-panel .btn-danger:hover { background: rgba(182,70,60,.18); }
 .controls-hint { margin-top: 11px; color: rgba(255,255,255,.36); font-size: 9px; line-height: 1.6; }
+.local-recording { margin-top: 18px; }
+.recording-quality { margin-top: 12px; }
+.local-recording .field-label { color: rgba(255,255,255,.8); }
+.local-recording .controls-hint { color: rgba(255,255,255,.65); }
+.recording-preview { width: 100%; max-height: 240px; margin-top: 12px; background: #111; object-fit: contain; }
+.recording-preview[hidden] { display: none; }
+.recording-downloads { padding-left: 20px; margin: 12px 0; font-size: 12px; overflow-wrap: anywhere; }
+.recording-downloads a { color: #b9e9dc; }
 
 .transcript-panel { min-width: 0; padding-top: 26px; color: #fff; }
 .transcript-heading { padding: 0 26px 20px; }
