@@ -211,7 +211,7 @@ test('every data column supports ascending and descending with numeric and date 
   assert.equal(sortUsage([high, unknown], 'lastUsed', 'desc')[0].id, 'high');
   const longTotal = { ...high, timedCount: 10 };
   assert.equal(sortUsage([longTotal, low], 'average', 'asc')[0].id, 'high', 'sorts averages rather than totals');
-  assert.equal(getUsageSort({ sort: 'bogus', direction: 'bad' }).column, 'started');
-  assert.equal(getUsageSort({ sort: '__proto__' }).column, 'started');
+  assert.equal(getUsageSort({ sort: 'bogus', direction: 'bad' }).column, 'lastUsed');
+  assert.equal(getUsageSort({ sort: '__proto__' }).column, 'lastUsed');
   assert.equal(getUsageSort({ sort: 'oldest' }).direction, 'asc');
 });

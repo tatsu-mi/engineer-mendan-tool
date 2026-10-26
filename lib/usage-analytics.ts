@@ -92,7 +92,7 @@ export type UsageSortDirection = 'asc' | 'desc';
 export function getUsageSort(params: UsageParams): { column: UsageSortColumn; direction: UsageSortDirection } {
   const legacy = new Map<string, UsageSortColumn>([['count', 'started'], ['time', 'seconds'], ['oldest', 'lastUsed']]);
   const requested = typeof params.sort === 'string' ? params.sort : '';
-  const column = usageSortColumns.find(item => item.key === requested)?.key || legacy.get(requested) || 'started';
+  const column = usageSortColumns.find(item => item.key === requested)?.key || legacy.get(requested) || 'lastUsed';
   const direction = params.direction === 'asc' || params.direction === 'desc'
     ? params.direction : column === 'name' || requested === 'oldest' ? 'asc' : 'desc';
   return { column, direction };
