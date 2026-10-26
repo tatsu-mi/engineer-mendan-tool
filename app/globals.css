@@ -353,6 +353,12 @@ footer { margin: clamp(120px, calc(100vh - 560px), 420px) 0 0 46px; padding-top:
 .history-message p { padding: 11px 13px; color: rgba(255,255,255,.88); background: rgba(255,255,255,.07); font-size: 12px; line-height: 1.8; white-space: pre-wrap; }
 .history-message.candidate p { color: #e1e3f4; background: rgba(121,136,207,.18); }
 .detail-review { padding: 24px; }
+.detail-reevaluate { padding: 20px 24px; border-bottom: 1px solid var(--line); }
+.detail-reevaluate p { color: var(--ink-2); font-size: 12px; line-height: 1.8; }
+.detail-reevaluate-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.detail-reevaluate-controls label { font-size: 11px; }
+.detail-reevaluate-controls input { width: min(100%, 320px); }
+.detail-reevaluate [role="alert"] { color: var(--danger, #a52d2d); }
 .detail-scores { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; }
 .detail-score { min-height: 94px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--surface-soft); border: 1px solid var(--line); }
 .detail-score span { color: var(--ink-3); font-size: 10px; }

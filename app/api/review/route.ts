@@ -9,6 +9,7 @@ import {
 } from '../_shared/gemini';
 import { requireAuthenticatedUser } from '../_shared/auth';
 import { getDatabaseErrorMessage, getSupabaseAdmin } from '../../../lib/supabase-admin';
+import { getHistoryViewer, getInterviewDetail } from '../../../lib/interview-history';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -77,7 +78,38 @@ export async function POST(request: Request) {
     return noStoreJson({ error: 'リクエストを読み取れませんでした。' }, { status: 400 });
   }
 
-  const { interviewId, projectName, requiredSkills, conversationLog, mediaFeedback } = input;
+  let { interviewId, projectName, requiredSkills, conversationLog, mediaFeedback } = input;
+  let reviewMemberId = authentication.memberId;
+  if (input.reevaluate === true) {
+    if (typeof interviewId !== 'string' || !interviewId) {
+      return noStoreJson({ error: '面談IDが正しくありません。' }, { status: 400 });
+    }
+    try {
+      const viewer = await getHistoryViewer(authentication.memberId, authentication.email);
+      const interview = await getInterviewDetail(interviewId, viewer.isAdministrator ? undefined : authentication.memberId);
+      if (!interview) return noStoreJson({ error: '面談が見つからないか、操作権限がありません。' }, { status: 404 });
+      if (!['completed', 'interrupted'].includes(interview.status)) {
+        return noStoreJson({ error: '完了または中断した面談のみ再評価できます。' }, { status: 409 });
+      }
+      const projects = interview.interview_projects;
+      const project = Array.isArray(projects) ? projects[0] : projects;
+      const reviews = interview.interview_reviews;
+      const previousReview = Array.isArray(reviews) ? reviews[0] : reviews;
+      projectName = project?.project_name ?? '';
+      requiredSkills = project?.required_skills ?? '';
+      conversationLog = [...(interview.conversation_logs ?? [])]
+        .sort((a, b) => a.sequence_number - b.sequence_number)
+        .map(log => ({ role: log.speaker_role, text: log.text }));
+      if (!(conversationLog as Array<{ role: string; text: string }>).some(log => log.role === 'candidate' && log.text.trim())) {
+        return noStoreJson({ error: '再評価できる候補者の会話ログがありません。' }, { status: 400 });
+      }
+      // 過去の音声・映像の助言は保持し、再解析や会話の採点には使わない。
+      mediaFeedback = isMediaFeedback(previousReview?.media_feedback) ? previousReview.media_feedback : undefined;
+      reviewMemberId = interview.member_id;
+    } catch {
+      return noStoreJson({ error: '再評価に必要な面談情報を取得できませんでした。' }, { status: 502 });
+    }
+  }
   if (mediaFeedback !== undefined && !isMediaFeedback(mediaFeedback)) {
     return noStoreJson({ error: '録音・録画の評価結果が不正です。' }, { status: 400 });
   }
@@ -106,11 +138,29 @@ ${logText}
 
 ## 評価基準
 - scoresには技術力、コミュニケーション、姿勢・意欲、総合をそれぞれ1〜5の整数で採点する。姿勢・意欲は会話から確認できた学習意欲や課題への取り組み方を根拠とし、attitudeのコメントと整合させる
+- 他の候補者とも比較して参画者を選ぶSES商談として、質問に問題なく答えられることや技術を説明できることは基本条件とする。「この案件でこの候補者を選ぶ理由」が会話から具体的に伝わったかを評価する。実在する競合候補者の能力や選考結果、市場統計は推測しない
+
+### 点数の目安
+- 1点：質問に対する内容面の回答が成立しない、または案件の必須要件に対する重大な不足が会話で確認された
+- 2点：関連する説明はあるが、回答が抽象的で、本人の担当・判断・成果や案件への適合を十分に確認できない
+- 3点：基本的な受け答えや技術説明ができ、必要な経験は確認できるが、この案件で選ぶ理由となる強み・貢献の伝達は弱い。問題のない回答や一般的な技術知識だけでは3点を上限とする
+- 4点：案件に関連する具体的な経験を、本人の役割・判断理由・行動・結果と結び付けて説明し、参画後にどう貢献できるかが伝わる。推奨できる明確な根拠がある
+- 5点：4点の条件に加え、案件の課題を踏まえた提案、トレードオフを含む深い判断、成果の再現性まで示し、積極的に選ぶべき説得力のある強みが確認できる
+
+### 項目ごとの判断
+- 技術力：用語や仕組みの説明だけで高得点にしない。具体的な課題、本人の担当範囲、選択肢と採用理由、検証・結果を評価し、案件で活かせる経験かを判断する。成果は数値に限らず、品質改善や問題解決など具体的に説明できた結果も評価する
+- コミュニケーション：質問を理解して無難に答えるだけでは3点まで。結論と根拠を整理し、相手の関心に合わせて具体例を示し、自分の強みと案件への貢献を説得力をもって伝えた場合に4点以上とする。話の長さや自己アピールの量だけでは加点しない
+- 姿勢・意欲：「頑張ります」「学びたいです」などの意思表明や丁寧な受け答えだけでは高得点にしない。主体的に課題を捉えた行動、学習を実務に活かした事例、案件理解に基づく提案や質問を根拠にする。逆質問の数だけでは加点しない
+- 総合：各項目の単純平均ではなく、必須要件への適合と、この案件で選ぶ理由が伝わったかで判断する。技術説明と問題のない受け答えにとどまり、案件に結び付く強み・貢献が具体的でなければ3点以下。姿勢・意欲の高さだけで技術面の不足やアピール不足を補って4点以上にしない
+- 厳しさは上記の根拠と条件で表し、機械的な減点や点数分布の割り当てはしない。説明不足・未確認と能力不足を区別し、質問されず説明機会もなかった事項を能力不足と断定しない。高得点に必要な根拠が未確認の場合は補完せず、何が確認できれば評価が上がるかを助言する
+
+### 根拠とコメント
 - 候補者の評価は会話内容だけを根拠とし、スキルシートの記載は加点・減点・経験や実績の補完に一切使わない
 - 案件情報は求めるスキルとの関連性を判断する基準としてのみ使い、候補者の経験・実績の根拠にしない
 - 面接官が質問内で紹介したスキルシートの情報は、候補者が会話で説明した事実として扱わない
 - technical、communication、attitude はそれぞれ200文字以内
-- feedback は300文字以内で、候補者が次回改善できる具体的な助言を含める
+- 各評価コメントは会話中の具体的な根拠と、選ばれるために足りない説明を示し、点数と整合させる。高評価の条件を満たす場合は、その強みを明記する
+- feedback は300文字以内で、選定上の最大の課題を優先し、次回どの経験について何を伝えればよいか具体的に助言する。「もっと具体的に」だけで終わらず、本人の役割・判断理由・結果・案件への貢献のうち不足していた要素を示す。改善例の実績や数値は捏造しない
 - 候補者の経験・実績・スキルの判定は、候補者発言そのものより、その直後のAI面接官による要約した復唱を優先する
 - AI面接官の質問、案件説明、逆質問への回答は候補者の実績ではないため、候補者の発言として評価しない
 - AI面接官の要約した復唱に含まれない候補者発言の情報は参考程度にとどめ、重要な加点・減点の根拠にしない。ただし、AI利用と本人の担当範囲の明示的な説明は、復唱による誤った実績の帰属を防ぐために保持する
@@ -120,7 +170,7 @@ ${logText}
 - AI面接官の質問と、その回答後にAI面接官が述べた要約した復唱の内容に意味上の矛盾がなければ、候補者は質問を正しく理解し、言葉の誤りなく回答したものと判断する
 - 文字起こし上の言葉の誤り、表現の不自然さ、発音、用語の言い間違いを、technical、communication、attitude、feedback、overallの根拠や改善点として記載しない
 - 会話で確認できなかった事項を経験済みと断定しない
-- overall は ◎（強く推奨）・○（推奨）・△（要検討）・×（見送り）のいずれか`;
+- overall は総合点と必ず対応させ、5点＝◎（強く推奨）、4点＝○（推奨）、3点＝△（要検討）、1〜2点＝×（見送り）とする。基本的な受け答えや技術説明ができただけで○・◎にしない`;
 
   const response = await fetch(`${GEMINI_API_BASE}/models/${TEXT_MODEL}:generateContent`, {
     method: 'POST',
@@ -150,7 +200,7 @@ ${logText}
       visual: mediaFeedback.visual, vocal: mediaFeedback.vocal, coverage: mediaFeedback.coverage
     };
     const { error } = await getSupabaseAdmin().rpc('save_interview_review', {
-      p_member_id: authentication.memberId,
+      p_member_id: reviewMemberId,
       p_interview_id: interviewId,
       p_review: review
     });

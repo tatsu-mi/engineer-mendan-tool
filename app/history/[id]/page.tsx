@@ -5,6 +5,7 @@ import { ensureActiveMember } from '../../../lib/supabase-admin';
 import { getHistoryViewer, getInterviewDetail } from '../../../lib/interview-history';
 import LoginPage from '../../components/LoginPage';
 import HistoryFrame from '../HistoryFrame';
+import ReevaluateReview from './ReevaluateReview';
 
 export const dynamic = 'force-dynamic';
 
@@ -130,6 +131,9 @@ export default async function InterviewHistoryDetailPage({ params, searchParams 
 
       <section className="detail-section">
         <div className="detail-section-heading"><p className="panel-kicker">Review</p><h2>総評</h2></div>
+        {['completed', 'interrupted'].includes(interview.status) && logs.some(log => log.speaker_role === 'candidate' && log.text.trim()) && (
+          <ReevaluateReview interviewId={interview.id} />
+        )}
         {!review ? <p className="detail-empty">総評は記録されていません。</p> : (
           <div className="detail-review">
             <div className="detail-scores">
