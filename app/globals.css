@@ -288,7 +288,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .review-media-coverage { grid-column: 1 / -1; }
 .review-section-icon { color: var(--brand); font-size: 11px; }
 .review-section-body { padding: 14px; color: var(--ink-2); font-size: 12px; line-height: 1.85; white-space: pre-wrap; }
-.review-feedback { border-color: #d5c8a9; }
+.review-feedback { grid-column: 1 / -1; border-color: #d5c8a9; }
 .review-feedback .review-section-header { color: #725021; background: #f7f2e7; border-bottom-color: #e6dcc4; }
 .review-feedback .review-section-body { color: #5f4d33; }
 
