@@ -306,9 +306,9 @@ export default function InterviewApp({ userEmail, isAdministrator = false }: Int
                       <option value="high">高</option>
                     </select>
                   </div>
-                  <p className="controls-hint" id="recordingHint">面談開始・再開時に記録を開始します。自分とAIの音声は音量差を抑えて収録します。記録ファイルはDB・サーバーに保存されません。終了・中断後、ページを閉じる前にダウンロードしてください。長時間の記録は端末のメモリを使用します。</p>
+                  <p className="controls-hint" id="recordingHint">面談開始・再開時に記録を開始します。自分とAIの音声は音量差を抑えて収録します。ダウンロードする動画は背景を単色に置き換えます（下のプレビューは元の映像です）。人物の輪郭や動きによっては背景が一部残る場合があります。背景除去に失敗すると録画を停止します。記録ファイルはDB・サーバーに保存されません。終了・中断後、ページを閉じる前にダウンロードしてください。長時間の記録は端末のメモリを使用します。</p>
                   <label className="field-label" htmlFor="mediaReviewEnabled">
-                    <input type="checkbox" id="mediaReviewEnabled" disabled aria-describedby="mediaReviewHint" /> 録音・録画から話し方・振る舞いを評価する
+                    <input type="checkbox" id="mediaReviewEnabled" defaultChecked disabled aria-describedby="mediaReviewHint" /> 録音・録画から話し方・振る舞いを評価する
                   </label>
                   <p className="controls-hint" id="mediaReviewHint">話し方や身振り・表情の改善点を総評に追加します。</p>
                   <p className="controls-hint" id="recordingStatus" role="status" aria-live="polite" />
@@ -342,7 +342,7 @@ export default function InterviewApp({ userEmail, isAdministrator = false }: Int
 
           <section className="review-panel" id="reviewPanel">
             <div className="review-panel-heading">
-              <div><p className="eyebrow">Interview review</p><h2>商談総評レポート</h2></div>
+              <div><p className="eyebrow">Interview review</p><h2>面談総評レポート</h2></div>
               <span className="report-label">Report</span>
             </div>
             <div id="reviewContent" />

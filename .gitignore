@@ -4,5 +4,6 @@ out/
 .vercel/
 *.log
 *.tsbuildinfo
+public/mediapipe/wasm/
 .env*
 !.env.example

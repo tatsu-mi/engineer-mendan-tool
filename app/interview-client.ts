@@ -1822,6 +1822,7 @@ async function startLocalRecording() {
   const generation = ++localRecordingGeneration;
   const recording = {
     recorder: null, destination: null, micSource: null, camera: null,
+    background: null, backgroundAbort: new AbortController(),
     output: null, chunks: [], failed: false, released: false,
     micChannel: null, aiChannel: null, compressor: null, balanceTimer: null,
     startedAt: new Date(), mode
@@ -1841,6 +1842,20 @@ async function startLocalRecording() {
           frameRate: { ideal: quality.frameRate, max: quality.maxFrameRate }
         }
       });
+      if (!isSessionActive || generation !== localRecordingGeneration) {
+        releaseLocalRecording(recording);
+        return;
+      }
+      status('録画の背景除去を準備しています...');
+      const { createBackgroundRecording } = await import('../lib/recording-background');
+      if (!isSessionActive || generation !== localRecordingGeneration) {
+        releaseLocalRecording(recording);
+        return;
+      }
+      recording.background = await createBackgroundRecording(recording.camera, quality.frameRate, () => {
+        recording.failed = true;
+        if (localRecording === recording) stopLocalRecording();
+      }, recording.backgroundAbort.signal);
     }
     if (!isSessionActive || generation !== localRecordingGeneration) {
       releaseLocalRecording(recording);
@@ -1865,7 +1880,7 @@ async function startLocalRecording() {
     }
     const stream = new MediaStream([
       ...recording.destination.stream.getAudioTracks(),
-      ...(recording.camera?.getVideoTracks() || [])
+      ...(recording.background?.stream.getVideoTracks() || [])
     ]);
     const candidates = mode === 'video'
       ? ['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
@@ -1905,7 +1920,7 @@ async function startLocalRecording() {
         const link = document.createElement('a');
         link.href = url;
         link.download = filename;
-        link.textContent = `${mode === 'video' ? '録画' : '録音'}をダウンロード (${(blob.size / 1024 / 1024).toFixed(1)} MB) — ${filename}`;
+        link.textContent = `${mode === 'video' ? '背景除去済みの録画' : '録音'}をダウンロード (${(blob.size / 1024 / 1024).toFixed(1)} MB) — ${filename}`;
         const item = document.createElement('li');
         item.appendChild(link);
         $('recordingDownloads').appendChild(item);
@@ -1913,7 +1928,7 @@ async function startLocalRecording() {
       recording.chunks = [];
       // 次の面談の記録状態を、前回の非同期停止イベントで上書きしない。
       if (!localRecording) $('recordingStatus').textContent = recording.failed
-        ? '記録にエラーがありました。ダウンロードしたファイルを確認してください。'
+        ? '記録にエラーがありました。停止までのファイルをダウンロードできます。録画の場合、背景除去が停止した可能性があります。'
         : '記録を終了しました。ページを閉じる前にダウンロードしてください。';
     };
     recorder.start(1000);
@@ -1931,7 +1946,7 @@ async function startLocalRecording() {
         };
       });
     }
-    status(mode === 'video' ? '● 録画中（自分・AIの音声＋カメラ映像）' : '● 録音中（自分・AIの音声）');
+    status(mode === 'video' ? '● 録画中（自分・AIの音声＋背景除去済みの映像）' : '● 録音中（自分・AIの音声）');
   } catch (error) {
     if (recording.recorder?.state === 'recording') recording.recorder.stop();
     if (generation === localRecordingGeneration) {
@@ -1945,6 +1960,8 @@ async function startLocalRecording() {
 function releaseLocalRecording(recording) {
   // カメラ許可待ちで停止された場合も、後から得られたトラックを解放する。
   recording.camera?.getTracks().forEach(track => { track.onended = null; track.stop(); });
+  recording.backgroundAbort?.abort();
+  recording.background?.stop();
   if (recording.released) return;
   recording.released = true;
   if (recording.balanceTimer !== null) clearInterval(recording.balanceTimer);
@@ -2440,7 +2457,7 @@ async function generateReview() {
     $('reviewContent').innerHTML = `
       <div class="review-generating">
         <div class="review-spinner"></div>
-        商談総評レポートを生成しています...
+        面談総評レポートを生成しています...
       </div>`;
     setStatus('面談終了。総評を生成しています...', 'idle');
 

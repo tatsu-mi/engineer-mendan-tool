@@ -9,7 +9,7 @@ const source = ts.transpileModule(readFileSync(resolve(__dirname, '../app/interv
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }
 }).outputText;
 
-function browser(mode = 'audio', getUserMedia) {
+function browser(mode = 'audio', getUserMedia, backgroundFactory) {
   const elements = new Map();
   const node = () => ({ children: [], textContent: '', hidden: true, style: {}, classList: { toggle() {} },
     appendChild(child) { this.children.push(child); }, play: async () => {} });
@@ -21,6 +21,8 @@ function browser(mode = 'audio', getUserMedia) {
   const track = kind => ({ kind, stopped: false, stop() { this.stopped = true; } });
   const mic = track('audio');
   const camera = track('video');
+  const processedCamera = track('video');
+  let backgroundError;
   class MediaStream {
     constructor(tracks) { this.tracks = tracks; }
     getTracks() { return this.tracks; }
@@ -62,7 +64,14 @@ function browser(mode = 'audio', getUserMedia) {
   const timeouts = new Map();
   let now = 0;
   const context = vm.createContext({
-    exports: {}, console, Blob, MediaRecorder, MediaStream, AbortSignal,
+    exports: {}, console, Blob, MediaRecorder, MediaStream, AbortSignal, AbortController,
+    require(name) {
+      assert.equal(name, '../lib/recording-background');
+      return { createBackgroundRecording: backgroundFactory || (async (camera, fps, onError) => {
+        backgroundError = onError;
+        return { stream: new MediaStream([processedCamera]), stop() { processedCamera.stop(); } };
+      }) };
+    },
     btoa: value => Buffer.from(value, 'binary').toString('base64'),
     performance: { now: () => now },
     setTimeout(callback) { timeouts.set(++nextInterval, callback); return nextInterval; },
@@ -94,7 +103,8 @@ function browser(mode = 'audio', getUserMedia) {
   context.testOutput = output;
   const run = code => vm.runInContext(code, context);
   run('recordingPageActive = true; isSessionActive = true; mediaStream = testMicStream; audioContext = testAudioContext; outputAnalyser = testOutput;');
-  return { run, element, recorders, blobs, connections, disconnections, mic, camera, destination,
+  return { run, element, recorders, blobs, connections, disconnections, mic, camera, processedCamera, destination,
+    failBackground() { backgroundError(); },
     analysers, gains, intervals, compressor, timeouts, advance(ms) { now += ms; } };
 }
 
@@ -125,6 +135,9 @@ test('video records a camera track and releases the camera after recording', asy
   });
   await app.run('startLocalRecording()');
   assert.equal(app.recorders[0].stream.getVideoTracks().length, 1);
+  assert.equal(app.recorders[0].stream.getVideoTracks()[0], app.processedCamera);
+  assert.notEqual(app.recorders[0].stream.getVideoTracks()[0], app.camera);
+  assert.equal(app.element('recordingPreview').srcObject.getVideoTracks()[0], app.camera);
   assert.equal(app.element('recordingPreview').hidden, false);
   assert.equal(constraints.video.width.max, 640);
   assert.equal(constraints.video.height.ideal, 360);
@@ -135,7 +148,50 @@ test('video records a camera track and releases the camera after recording', asy
   app.run('stopLocalRecording()');
   app.recorders[0].finish();
   assert.equal(app.camera.stopped, true);
+  assert.equal(app.processedCamera.stopped, true);
   assert.equal(app.element('recordingPreview').hidden, true);
+});
+
+test('background initialization failure never records or offers the original camera', async () => {
+  const app = browser('video', undefined, async () => { throw new Error('segmentation failed'); });
+  await app.run('startLocalRecording()');
+  assert.equal(app.recorders.length, 0);
+  assert.equal(app.camera.stopped, true);
+  assert.equal(app.run('isSessionActive'), true);
+  assert.equal(app.element('recordingDownloads').children.length, 0);
+  assert.match(app.element('recordingStatus').textContent, /記録なしで継続/);
+});
+
+test('background processing failure stops recording and preserves only processed video', async () => {
+  const app = browser('video');
+  await app.run('startLocalRecording()');
+  app.failBackground();
+  assert.equal(app.recorders[0].state, 'inactive');
+  app.recorders[0].finish();
+  assert.equal(app.camera.stopped, true);
+  assert.equal(app.processedCamera.stopped, true);
+  assert.equal(app.recorders[0].stream.getVideoTracks()[0], app.processedCamera);
+  assert.match(app.element('recordingStatus').textContent, /背景除去/);
+  assert.match(app.element('recordingDownloads').children[0].children[0].textContent, /背景除去済み/);
+});
+
+test('ending during background preparation aborts it and releases late processed tracks', async () => {
+  let finish;
+  let aborted = false;
+  let stopped = false;
+  const app = browser('video', undefined, (_, __, ___, signal) => new Promise(resolve => {
+    signal.addEventListener('abort', () => { aborted = true; });
+    finish = () => resolve({ stream: {}, stop() { stopped = true; } });
+  }));
+  const pending = app.run('startLocalRecording()');
+  while (!finish) await new Promise(resolve => setImmediate(resolve));
+  app.run('isSessionActive = false; stopLocalRecording()');
+  assert.equal(aborted, true);
+  finish();
+  await pending;
+  assert.equal(stopped, true);
+  assert.equal(app.recorders.length, 0);
+  assert.equal(app.camera.stopped, true);
 });
 
 for (const [quality, width, height, bitRate] of [
