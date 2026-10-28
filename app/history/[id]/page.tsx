@@ -136,6 +136,11 @@ export default async function InterviewHistoryDetailPage({ params, searchParams 
         )}
         {!review ? <p className="detail-empty">総評は記録されていません。</p> : (
           <div className="detail-review">
+            <div className="detail-overall">
+              <span>総合評価</span>
+              <strong>{review.overall}</strong>
+              <small>総合スコア {review.overall_score} / 5</small>
+            </div>
             <div className="detail-scores">
               <Score label="技術力" value={review.technical_score} />
               <Score label="コミュニケーション" value={review.communication_score} />

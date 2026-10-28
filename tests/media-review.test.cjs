@@ -90,8 +90,7 @@ test('stores media feedback separately without changing conversation scoring inp
   const exports = {};
   const prompts = [];
   let saved;
-  const review = { overall: '○', scores: { 技術力: 3, コミュニケーション: 3, '姿勢・意欲': 3, 総合: 3 },
-    technical: '設計経験。', communication: '説明。', attitude: '回答。', feedback: '具体化。' };
+  const { generatedReview: review } = require('./fixtures/review.cjs');
   vm.runInNewContext(moduleSource('app/api/review/route.ts'), {
     exports,
     require: name => {

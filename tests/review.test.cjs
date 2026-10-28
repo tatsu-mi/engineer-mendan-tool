@@ -18,11 +18,8 @@ test('review accepts conversation without a skill sheet and ignores any legacy s
   const exports = {};
   const prompts = [];
   const saved = [];
-  const review = {
-    overall: '○', scores: { 技術力: 3, コミュニケーション: 3, '姿勢・意欲': 4, 総合: 3 },
-    technical: '会話で確認した設計経験。', communication: '具体的な説明。',
-    attitude: '前向きな回答。', feedback: '判断理由をさらに具体化してください。'
-  };
+  const fixture = require('./fixtures/review.cjs');
+  const review = structuredClone(fixture.review);
   vm.runInNewContext(source('app/api/review/route.ts'), {
     exports,
     require: name => {
@@ -34,7 +31,12 @@ test('review accepts conversation without a skill sheet and ignores any legacy s
     },
     fetch: async (url, options) => {
       prompts.push(JSON.parse(options.body).contents[0].parts[0].text);
-      return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify(review) }] } }] });
+      const generated = { ...fixture.generatedReview, scores: review.scores };
+      const schema = JSON.parse(options.body).generationConfig.responseSchema;
+      for (const key of ['technical', 'communication', 'attitude', 'feedback']) {
+        assert.deepEqual(schema.properties[key].required, key === 'feedback' ? ['summary', 'target', 'improvement', 'example'] : ['summary', 'guidance', 'advice', 'improvement', 'example']);
+      }
+      return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify(generated) }] } }] });
     }
   });
   const input = {
@@ -57,9 +59,14 @@ test('review accepts conversation without a skill sheet and ignores any legacy s
   assert.doesNotMatch(prompts[0], /SECRET_SHEET/);
   assert.match(prompts[0], /候補者の評価は会話内容だけを根拠/);
   assert.match(prompts[0], /エラー応答を統一/);
+  assert.match(prompts[0], /評価の中心は「この候補者が今回の案件で活躍できるか」/);
+  assert.match(prompts[0], /受け答えが的確であることだけでは、この水準を超えない/);
+  assert.match(prompts[0], /主要な必須要件の適合や本人の役割・判断・行動・結果が未確認で、活躍できると判断できない場合は3点以下/);
+  assert.match(prompts[0], /根拠が足りなければ3点以下に見直す/);
+  assert.doesNotMatch(prompts[0], /すべてが揃うこと.*一律の必須条件にしない|この行動の評価を3点に抑えない|課題と対応が結び付く実務上の工夫は4点を支持/);
   assert.equal(saved.length, 3);
   assert.equal(saved[0].args.p_interview_id, input.interviewId);
-  assert.equal(saved[0].args.p_review.scores['姿勢・意欲'], 4);
+  assert.equal(saved[0].args.p_review.scores['姿勢・意欲'], 3);
 
   for (const score of [undefined, 0, 6, 4.5, '4']) {
     review.scores['姿勢・意欲'] = score;
