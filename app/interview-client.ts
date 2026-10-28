@@ -827,7 +827,7 @@ function base64ToFloat32(base64) {
 
 // ===== 回答ターン制御 =====
 function beginAnswerRecording() {
-  if (!isSessionActive || liveReconnectInProgress || !setupCompleted
+  if (!isSessionActive || isAnswerRecording || liveReconnectInProgress || !setupCompleted
     || !ws || ws.readyState !== WebSocket.OPEN || isAwaitingModel) return;
   if (liveRotationRequested) {
     if (sessionResumptionHandle) reconnectLiveSession();
@@ -1164,6 +1164,16 @@ async function handleMessage(event, socket = ws) {
 
   const content = data.serverContent;
   if (!content) return;
+
+  // 回答の文字起こしは送信前にも届く。AIの応答とは独立して受け取る。
+  if (content.inputTranscription?.text) {
+    userTextBuffer += content.inputTranscription.text;
+    scheduleTurnFinalization();
+  }
+
+  // 開始・回答送信・送信済み回答の再開だけがAIの発言を許可する。
+  // 回答待ちに届く自律的な追加発言や重複した完了通知で、質問を進めない。
+  if (!isAwaitingModel) return;
   if (isAwaitingModel) armResponseTimeout();
 
   if (content.interrupted === true) {
@@ -1188,11 +1198,6 @@ async function handleMessage(event, socket = ws) {
     }
   }
 
-  if (content.inputTranscription?.text) {
-    userTextBuffer += content.inputTranscription.text;
-    scheduleTurnFinalization();
-  }
-
   if (content.outputTranscription?.text) {
     aiTextBuffer += content.outputTranscription.text;
     scheduleTurnFinalization();
@@ -1205,6 +1210,14 @@ async function handleMessage(event, socket = ws) {
 }
 
 // ===== システムプロンプト =====
+const WAIT_FOR_ANSWER_POLICY = `## 質問後の回答待ち
+- 回答の要約・復唱は「○○をご担当されたのですね。」のような平叙文にする。「○○ですか？」「○○ということですか？」のような確認質問にしてから主質問を続けない
+- 候補者の発言が曖昧で確認が必要な場合、その確認も一つの質問として扱う。確認を尋ねたら発言を終了し、回答を受ける前にQ番号や次の質問を続けない
+- 自己紹介の依頼、主質問、深掘り、逆質問の呼びかけは、どれも一つ尋ねた時点でそのターンの発言を終了する
+- 質問後は、候補者が回答を送信し、次の「[進行制御]」が届くまで待つ。沈黙や考えている時間を回答済み・回答なしと判断しない
+- 同じ発言内で自分の質問に回答したり、候補者の回答を想像して復唱したり、次の質問や終了挨拶へ進んだりしない
+- 深掘りするか次の主質問へ進むかはどちらか一方だけを選ぶ。深掘りを尋ねた場合は回答を待ち、同じ発言内で次の主質問を続けない`;
+
 const ANSWER_UNDERSTANDING_POLICY = `## 回答の理解と担当範囲の確認
 - 復唱では、候補者が説明した開発方法・使用ツール・本人の担当範囲を保持し、直前の質問やスキルシートにある想定へ置き換えない
 - バイブコーディング、AI支援、コード生成、Claude Codeなどへの言及は、AIを使った開発方法として受け止める。ライブラリ利用や、本人が一から手作業で設計・実装したという意味に読み替えない
@@ -1216,7 +1229,7 @@ const ANSWER_UNDERSTANDING_POLICY = `## 回答の理解と担当範囲の確認
 - 聞き取れなかった開発方法や担当範囲は、想像して断定せず、深掘り可能なターンで確認する`;
 
 function buildTurnInstruction() {
-  return `${buildTurnProgressInstruction()}\n\n${ANSWER_UNDERSTANDING_POLICY}`;
+  return `${buildTurnProgressInstruction()}\n\n${ANSWER_UNDERSTANDING_POLICY}\n\n${WAIT_FOR_ANSWER_POLICY}`;
 }
 
 function buildTurnProgressInstruction() {
@@ -1248,9 +1261,9 @@ function buildTurnProgressInstruction() {
       : '二回目の深掘りは、最初の深掘りへの回答にも具体化すべき点が残る場合に行ってください。'
     : '「標準」設定のため、具体化する価値が少しでもあれば深掘りを優先し、十分な判断材料がそろっている場合だけ次へ進んでください。';
   const nextAction = nextQuestion
-    ? `深掘りが不要なら、確定済み主質問${nextQuestionNumber}を「Q${nextQuestionNumber}です。」に続けてそのまま尋ねてください。
+    ? `確定済み主質問${nextQuestionNumber}を「Q${nextQuestionNumber}です。」に続けてそのまま尋ね、その一問で発言を終了してください。
 確定済み主質問${nextQuestionNumber}：${nextQuestion}`
-    : '深掘りが不要なら、独立した発言で正確に「以上で私からの質問は終わりです。何かご質問はありますか？」と尋ねてください。';
+    : '正確に「以上で私からの質問は終わりです。何かご質問はありますか？」と尋ね、そこで発言を終了してください。';
 
   if (!canFollowUp) {
     return `[進行制御]
@@ -1261,10 +1274,11 @@ ${nextAction}`;
   return `[進行制御]
 候補者の直前の回答内容を、要点に絞って最初の一文に自然かつ簡潔に要約して復唱してください。長い回答をそのまま繰り返さず、「ご回答は、」のような定型的な前置きも使わず、たとえば「JavaでAPI開発を3年間担当され、設計からテストまで経験されたのですね」のように会話として自然につなげてください。回答にない事実を補わず、重要な固有名詞・数値・担当範囲は保持してください。
 
-復唱した後は、次の主質問へ進む前に深掘りの要否を必ず判定してください。回答が抽象的な場合、本人の担当範囲・具体的な進め方・判断理由・工夫・成果のいずれかが不明な場合、または案件の必須スキルに関する経験を具体化できる場合は、次へ進まず、直前の回答に沿った深掘り質問を一つしてください。回答だけで十分に具体的な判断材料が得られている場合に限り、次へ進んでください。深掘りにはQ番号を付けないでください。
+復唱した後は、発言する前に深掘りの要否を判定し、以下のAかBのどちらか一方だけを実行してください。AとBを同じ発言内で実行してはいけません。
+A：回答が抽象的な場合、本人の担当範囲・具体的な進め方・判断理由・工夫・成果のいずれかが不明な場合、または案件の必須スキルに関する経験を具体化できる場合は、直前の回答に沿った深掘り質問を一つしてください。深掘りにはQ番号を付けず、その質問で発言を終了してください。Aを選んだ場合はBを実行せず、候補者の回答送信を待ってください。
 直前の質問がスキルシートに経験の記載がないスキルについての質問で、候補者が未経験または経験がほぼないと回答した場合は、実務経験の詳細を繰り返し尋ねず、現在の学習、類似経験を生かした習得方法、参画後のキャッチアップ方法を深掘りの対象にしてください。深掘りの回数は通常どおり設定された深掘り強度に従ってください。
 ${followUpPolicy}
-${nextAction}`;
+B：回答だけで十分に具体的な判断材料が得られ、深掘り・確認質問を一切しない場合に限り、${nextAction}`;
 }
 
 function buildSystemPrompt() {
@@ -1304,6 +1318,8 @@ function buildSystemPrompt() {
 - 逆質問の開始と同じ発言内で終了の挨拶をしない
 - 「[進行制御]」で終了を指示され、候補者が質問なしと明確に伝えた場合だけ、正確に「面談は以上です。本日はお時間をいただきありがとうございました。後ほど結果をご連絡いたします」と述べる
 - 丁寧・テンポよく、ビジネスライクなトーンで話す
+
+${WAIT_FOR_ANSWER_POLICY}
 
 ## 候補者のスキルシート（回答の理解と深掘りの文脈として参照すること）
 ${skillSheet}

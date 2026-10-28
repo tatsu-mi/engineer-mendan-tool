@@ -54,7 +54,7 @@ function browser(fetchImpl) {
   vm.runInContext(source, context);
   const run = code => vm.runInContext(code, context);
   element('apiKeyInput').value = 'test-key';
-  run("isSessionActive = true; buildSystemPrompt = () => 'interview instructions';");
+  run("const actualBuildSystemPrompt = buildSystemPrompt; isSessionActive = true; buildSystemPrompt = () => 'interview instructions';");
   const tick = () => new Promise(resolve => setImmediate(resolve));
   const connect = async (recordAnswer = true) => {
     const pending = run('connectLiveApi("initial-token", null, liveConnectionGeneration)');
@@ -274,6 +274,84 @@ test('self introduction always gets one project-related question before Q1 for e
     assert.equal(app.run('questionCount'), 1);
     assert.equal(app.run('currentQuestionFollowUpCount'), 0);
   }
+});
+
+test('unsolicited AI speech cannot skip a question while the candidate is answering', async () => {
+  const app = browser();
+  const socket = await app.connect();
+  setupTranscriptMessages(app);
+  app.run(`questionCount = 1; selfIntroductionCompleted = true;
+    interviewQuestions = ['設計経験は？', 'テスト経験は？'];
+    let playedChunks = 0; enqueueAudio = async () => { playedChunks++; };
+    showAiThinking = () => {};`);
+  await socket.message({ serverContent: {
+    inputTranscription: { text: '設計を担当しました。' },
+    modelTurn: { parts: [{ inlineData: { data: 'unexpected-audio' } }, { text: 'Q2です。' }] },
+    outputTranscription: { text: 'テスト経験は？' }, turnComplete: true
+  } });
+  await socket.message({ serverContent: { interrupted: true } });
+  assert.equal(app.run('playedChunks'), 0);
+  assert.equal(app.run('questionCount'), 1);
+  assert.equal(app.run('aiTextBuffer'), '');
+  assert.equal(app.run('userTextBuffer'), '設計を担当しました。');
+  assert.equal(app.run('conversationLog.length'), 0);
+  assert.equal(app.run('turnCompletePending'), false);
+  assert.equal(app.run('isAnswerRecording'), true);
+  assert.equal(app.element('nextBtn').disabled, false);
+  assert.equal(socket.sent.filter(message => message.realtimeInput?.activityStart).length, 1);
+
+  app.run('submitAnswer(); submitAnswer();');
+  assert.equal(socket.sent.filter(message => message.realtimeInput?.activityEnd).length, 1);
+  await socket.message({ serverContent: {
+    outputTranscription: { text: '設計を担当されたのですね。Q2です。テスト経験は？' }, turnComplete: true
+  } });
+  [...app.timers.values()].find(timer => timer.delay === 800).callback();
+  assert.equal(app.run('questionCount'), 2);
+  assert.equal(app.run('conversationLog.length'), 2);
+  assert.equal(app.run('isAnswerRecording'), true);
+
+  await socket.message({ serverContent: { turnComplete: true } });
+  await socket.message({ serverContent: { inputTranscription: { text: '単体テストを' } } });
+  app.run('beginAnswerRecording();');
+  assert.equal(app.run('turnCompletePending'), false);
+  assert.equal(app.run('userTextBuffer'), '単体テストを');
+  assert.equal(socket.sent.filter(message => message.realtimeInput?.activityStart).length, 2);
+});
+
+test('every interview stage explicitly ends after one question and waits for answer submission', () => {
+  const app = browser();
+  const prompt = app.run('actualBuildSystemPrompt()');
+  assert.match(prompt, /一つ尋ねた時点でそのターンの発言を終了/);
+  assert.match(prompt, /沈黙や考えている時間を回答済み・回答なしと判断しない/);
+  assert.match(prompt, /要約・復唱は.*平叙文にする/);
+  assert.match(prompt, /確認も一つの質問として扱う/);
+  for (const stage of [
+    'questionCount = 0; selfIntroductionFollowUpAsked = false;',
+    'questionCount = 0; selfIntroductionFollowUpAsked = true;',
+    "questionCount = 1; interviewFollowUpIntensity = 'none';",
+    "questionCount = 1; interviewFollowUpIntensity = 'deep';",
+    'reverseQuestionActive = true;'
+  ]) {
+    app.run(stage);
+    assert.match(app.run('buildTurnInstruction()'), /次の「\[進行制御\]」が届くまで待つ/);
+  }
+});
+
+test('follow-up and next main question are mutually exclusive instructions', () => {
+  const app = browser();
+  app.run(`questionCount = 1; interviewQuestions = ['設計経験は？', 'テスト経験は？'];`);
+  for (const intensity of ['standard', 'deep']) {
+    app.run(`interviewFollowUpIntensity = '${intensity}'; currentQuestionFollowUpCount = 0;`);
+    const instruction = app.run('buildTurnInstruction()');
+    assert.match(instruction, /AかBのどちらか一方だけ/);
+    assert.match(instruction, /Aを選んだ場合はBを実行せず、候補者の回答送信を待ってください/);
+    assert.match(instruction, /B：.*深掘り・確認質問を一切しない場合に限り、確定済み主質問2/);
+    assert.match(instruction, /確認質問にしてから主質問を続けない/);
+  }
+  app.run('currentQuestionFollowUpCount = 2;');
+  const instruction = app.run('buildTurnInstruction()');
+  assert.match(instruction, /追加の深掘りはせずに次へ/);
+  assert.doesNotMatch(instruction, /A：|深掘りが不要なら/);
 });
 
 function setupTranscriptMessages(app) {
